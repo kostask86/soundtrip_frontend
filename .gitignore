@@ -1,0 +1,25 @@
+# Virtual environments
+.venv/
+.vnev/
+venv/
+env/
+
+# Python cache/artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/
