@@ -1,7 +1,124 @@
+import html
+import os
+from typing import Any
+
+import requests
 import streamlit as st
 
+from soundtrip_client import SoundTripAPIError, wait_for_playlist
 
 st.set_page_config(page_title="Song Journey", page_icon="🎵", layout="wide")
+
+DEFAULT_PROMPT = (
+    "Create a 6-song playlist with psychedelic rock and blues rock from the late 1960s and early "
+    "1970s. I want it to feel mysterious, dark, transcendent, and intense, with influences from "
+    "American folk, blues tradition, and psychedelic counterculture."
+)
+
+EMPTY_SIGNAL = "—"
+
+
+def _api_base_url() -> str:
+    env = os.environ.get("SOUNDTRIP_API_BASE", "").strip()
+    if env:
+        return env.rstrip("/")
+    try:
+        sec = st.secrets.get("SOUNDTRIP_API_BASE")
+        if sec:
+            return str(sec).strip().rstrip("/")
+    except (FileNotFoundError, AttributeError, RuntimeError):
+        pass
+    return "http://127.0.0.1:8000"
+
+
+def _init_session_state() -> None:
+    if "generated_playlist" not in st.session_state:
+        st.session_state.generated_playlist = None
+    if "playlist_error" not in st.session_state:
+        st.session_state.playlist_error = None
+    if "playlist_prompt" not in st.session_state:
+        st.session_state.playlist_prompt = DEFAULT_PROMPT
+
+
+def _ordered_unique_join(values: list[str]) -> str:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in values:
+        s = (raw or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return ", ".join(out) if out else EMPTY_SIGNAL
+
+
+def _aggregates_from_playlist(playlist: dict[str, Any]) -> dict[str, str]:
+    songs = playlist.get("songs") or []
+    styles: list[str] = []
+    emotions: list[str] = []
+    times: list[str] = []
+    influences: list[str] = []
+    geos: list[str] = []
+    for song in songs:
+        if not isinstance(song, dict):
+            continue
+        for st_obj in song.get("styles") or []:
+            if isinstance(st_obj, dict) and st_obj.get("label"):
+                styles.append(str(st_obj["label"]))
+        for em in song.get("emotions") or []:
+            if isinstance(em, dict) and em.get("label"):
+                emotions.append(str(em["label"]))
+        tm = song.get("time")
+        if isinstance(tm, dict) and tm.get("label"):
+            times.append(str(tm["label"]))
+        for inf in song.get("influences") or []:
+            if isinstance(inf, dict) and inf.get("label"):
+                influences.append(str(inf["label"]))
+        g = song.get("geography")
+        if isinstance(g, dict):
+            p = g.get("primary")
+            if isinstance(p, dict) and p.get("label"):
+                geos.append(str(p["label"]))
+            for sec in g.get("secondary") or []:
+                if isinstance(sec, dict) and sec.get("label"):
+                    geos.append(str(sec["label"]))
+    n = len(songs) if isinstance(songs, list) else 0
+    return {
+        "style": _ordered_unique_join(styles),
+        "time": _ordered_unique_join(times),
+        "emotion": _ordered_unique_join(emotions),
+        "influence": _ordered_unique_join(influences),
+        "geography": _ordered_unique_join(geos),
+        "songs_requested": str(n) if n else EMPTY_SIGNAL,
+    }
+
+
+def _tags_for_song(song: dict[str, Any]) -> list[str]:
+    tags: list[str] = []
+    for st_obj in song.get("styles") or []:
+        if isinstance(st_obj, dict) and st_obj.get("label"):
+            tags.append(str(st_obj["label"]))
+    for em in song.get("emotions") or []:
+        if isinstance(em, dict) and em.get("label"):
+            tags.append(str(em["label"]))
+    tm = song.get("time")
+    if isinstance(tm, dict) and tm.get("label"):
+        tags.append(str(tm["label"]))
+    for inf in song.get("influences") or []:
+        if isinstance(inf, dict) and inf.get("label"):
+            tags.append(str(inf["label"]))
+    g = song.get("geography")
+    if isinstance(g, dict):
+        p = g.get("primary")
+        if isinstance(p, dict) and p.get("label"):
+            tags.append(str(p["label"]))
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for t in tags:
+        if t not in seen:
+            seen.add(t)
+            ordered.append(t)
+    return ordered
 
 
 def inject_styles() -> None:
@@ -21,63 +138,6 @@ def inject_styles() -> None:
                 max-width: 1220px;
                 padding-top: 1.2rem;
                 padding-bottom: 1.3rem;
-            }
-
-            .topbar {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 1.4rem;
-            }
-
-            .brand {
-                display: flex;
-                align-items: center;
-                gap: 0.6rem;
-                font-weight: 700;
-                color: #f5f7ff;
-                font-size: 1.1rem;
-            }
-
-            .brand .logo {
-                width: 30px;
-                height: 30px;
-                border-radius: 999px;
-                background: radial-gradient(circle at 25% 25%, #8f7dff, #5b39f4 55%, #382492 100%);
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 0.95rem;
-                box-shadow: 0 0 18px rgba(126, 92, 255, 0.6);
-            }
-
-            .nav {
-                display: flex;
-                gap: 0.6rem;
-            }
-
-            .pill {
-                border: 1px solid rgba(161, 180, 255, 0.2);
-                border-radius: 999px;
-                padding: 0.36rem 0.95rem;
-                color: #d9e3ff;
-                background: rgba(14, 20, 38, 0.56);
-                font-size: 0.82rem;
-            }
-
-            .pill.active {
-                background: linear-gradient(90deg, rgba(72, 53, 196, 0.45), rgba(64, 112, 255, 0.42));
-                border-color: rgba(129, 146, 255, 0.65);
-                color: #ffffff;
-                box-shadow: 0 0 14px rgba(91, 95, 255, 0.35);
-            }
-
-            .avatar {
-                width: 36px;
-                height: 36px;
-                border-radius: 999px;
-                background: radial-gradient(circle at 20% 20%, #77f6ff 0%, #8e63ff 55%, #4a2ea5 100%);
-                box-shadow: 0 0 14px rgba(137, 119, 255, 0.6);
             }
 
             .hero-title {
@@ -278,24 +338,82 @@ def inject_styles() -> None:
     )
 
 
-def render_topbar() -> None:
-    st.markdown(
-        """
-        <div class="topbar">
-            <div class="brand"><span class="logo">♪</span>Song Journey</div>
-            <div class="nav">
-                <span class="pill active">Discover</span>
-                <span class="pill">Journey</span>
-                <span class="pill">Library</span>
+def _chip(k: str, v: str) -> str:
+    return (
+        f'<div class="chip"><div class="k">{html.escape(k)}</div>'
+        f'<div class="v">{html.escape(v)}</div></div>'
+    )
+
+
+def _signal_row(label: str, value: str) -> str:
+    return (
+        f'<div class="signal-row">'
+        f'<div class="signal-label">{html.escape(label)}</div>'
+        f'<div class="signal-value">{html.escape(value)}</div>'
+        f"</div>"
+    )
+
+
+def render_chips(agg: dict[str, str]) -> None:
+    inner = "".join(
+        [
+            _chip("Style", agg["style"]),
+            _chip("Time", agg["time"]),
+            _chip("Emotion", agg["emotion"]),
+            _chip("Influence", agg["influence"]),
+            _chip("Songs Requested", agg["songs_requested"]),
+        ]
+    )
+    st.markdown(f'<div class="chip-row">{inner}</div>', unsafe_allow_html=True)
+
+
+def render_playlist_songs(playlist: dict[str, Any]) -> None:
+    songs = playlist.get("songs") or []
+    for index, song in enumerate(songs, start=1):
+        if not isinstance(song, dict):
+            continue
+        title = str(song.get("title") or "Untitled")
+        artist = str(song.get("artist") or "")
+        tag_list = _tags_for_song(song)
+        tags_html = "".join(f'<span class="tag">{html.escape(t)}</span>' for t in tag_list)
+        st.markdown(
+            f"""
+            <div class="song-row">
+                <div class="song-num">{index}</div>
+                <div>
+                    <div class="song-title">{html.escape(title)}</div>
+                    <div class="song-artist">{html.escape(artist)}</div>
+                    <div class="song-tags">{tags_html}</div>
+                </div>
+                <div class="play-btn">▶</div>
             </div>
-            <div class="avatar"></div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_signals_panel(agg: dict[str, str], *, has_playlist: bool) -> None:
+    geo_row = ""
+    if has_playlist and agg.get("geography") and agg["geography"] != EMPTY_SIGNAL:
+        geo_row = _signal_row("Geography", agg["geography"])
+    st.markdown(
+        f"""
+        <div class="signals-card">
+            <div class="signals-title">Journey Signals</div>
+            {_signal_row("Style", agg["style"] if has_playlist else EMPTY_SIGNAL)}
+            {_signal_row("Time", agg["time"] if has_playlist else EMPTY_SIGNAL)}
+            {_signal_row("Emotion", agg["emotion"] if has_playlist else EMPTY_SIGNAL)}
+            {_signal_row("Influence", agg["influence"] if has_playlist else EMPTY_SIGNAL)}
+            {geo_row}
+            {_signal_row("Songs Requested", agg["songs_requested"] if has_playlist else EMPTY_SIGNAL)}
+            <div class="wave">~ waveform visualization placeholder ~</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
-def render_left_panel() -> None:
+def render_left_panel(api_base: str) -> None:
     st.markdown('<div class="hero-title">Describe your perfect playlist</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="hero-sub">Tell us the style, time period, emotions, influences, and number of songs you want.</div>',
@@ -306,111 +424,67 @@ def render_left_panel() -> None:
     with left_input:
         st.text_area(
             "playlist_prompt",
-            value=(
-                "Create a 6-song playlist with psychedelic rock and blues rock from the late 1960s and early "
-                "1970s. I want it to feel mysterious, dark, transcendent, and intense, with influences from "
-                "American folk, blues tradition, and psychedelic counterculture."
-            ),
             height=170,
             label_visibility="collapsed",
+            key="playlist_prompt",
         )
     with right_button:
         st.write("")
         st.write("")
         generate = st.button("✨ Generate Playlist", use_container_width=True)
         if generate:
-            st.toast("UI only for now — API calls next step.", icon="🎵")
+            st.session_state.playlist_error = None
+            prompt = (st.session_state.get("playlist_prompt") or "").strip()
+            if len(prompt) < 5:
+                st.session_state.playlist_error = "Prompt must be at least 5 characters (API requirement)."
+            else:
+                try:
+                    with st.spinner("Generating playlist…"):
+                        st.session_state.generated_playlist = wait_for_playlist(api_base, prompt)
+                    st.toast("Playlist ready!", icon="🎵")
+                except SoundTripAPIError as exc:
+                    st.session_state.playlist_error = str(exc)
+                except requests.RequestException as exc:
+                    st.session_state.playlist_error = f"Network error: {exc}"
 
-    st.markdown(
-        """
-        <div class="chip-row">
-            <div class="chip"><div class="k">Style</div><div class="v">Psychedelic Rock, Blues Rock</div></div>
-            <div class="chip"><div class="k">Time</div><div class="v">Late 1960s to Early 1970s</div></div>
-            <div class="chip"><div class="k">Emotion</div><div class="v">Dark, Mysterious, Transcendent, Intense</div></div>
-            <div class="chip"><div class="k">Influence</div><div class="v">American Folk, Blues Tradition, Psychedelic Counterculture</div></div>
-            <div class="chip"><div class="k">Songs Requested</div><div class="v">6</div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    if st.session_state.playlist_error:
+        st.error(st.session_state.playlist_error)
 
-    st.markdown('<div class="section-title">🎵 Generated Playlist</div>', unsafe_allow_html=True)
-
-    songs = [
-        ("The End", "The Doors", ["Psychedelic Rock", "1960s", "Mystery"]),
-        ("Stairway to Heaven", "Led Zeppelin", ["Blues Rock", "1970s", "Epic"]),
-        ("Like a Rolling Stone", "Bob Dylan", ["Folk Rock", "1960s", "Rebellious"]),
-        ("Time", "Pink Floyd", ["Psychedelic Rock", "1970s", "Transcendent"]),
-        ("All Along the Watchtower", "The Jimi Hendrix Experience", ["Blues Rock", "1960s", "Mystery"]),
-        ("White Rabbit", "Jefferson Airplane", ["Psychedelic Rock", "1960s", "Dreamy"]),
-    ]
-
-    for index, (title, artist, tags) in enumerate(songs, start=1):
-        tags_html = "".join([f'<span class="tag">{tag}</span>' for tag in tags])
-        st.markdown(
-            f"""
-            <div class="song-row">
-                <div class="song-num">{index}</div>
-                <div>
-                    <div class="song-title">{title}</div>
-                    <div class="song-artist">{artist}</div>
-                    <div class="song-tags">{tags_html}</div>
-                </div>
-                <div class="play-btn">▶</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
-def render_signals_panel() -> None:
-    st.markdown(
-        """
-        <div class="signals-card">
-            <div class="signals-title">Journey Signals</div>
-
-            <div class="signal-row">
-                <div class="signal-label">Style</div>
-                <div class="signal-value">Psychedelic Rock, Blues Rock</div>
-            </div>
-
-            <div class="signal-row">
-                <div class="signal-label">Time</div>
-                <div class="signal-value">Late 1960s to Early 1970s</div>
-            </div>
-
-            <div class="signal-row">
-                <div class="signal-label">Emotion</div>
-                <div class="signal-value">Dark, Mysterious, Transcendent, Intense</div>
-            </div>
-
-            <div class="signal-row">
-                <div class="signal-label">Influence</div>
-                <div class="signal-value">American Folk, Blues Tradition, Psychedelic Counterculture</div>
-            </div>
-
-            <div class="signal-row">
-                <div class="signal-label">Songs Requested</div>
-                <div class="signal-value">6</div>
-            </div>
-
-            <div class="wave">~ waveform visualization placeholder ~</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    pl = st.session_state.generated_playlist
+    if isinstance(pl, dict) and pl.get("songs") is not None:
+        agg = _aggregates_from_playlist(pl)
+        render_chips(agg)
+        st.markdown('<div class="section-title">🎵 Generated Playlist</div>', unsafe_allow_html=True)
+        render_playlist_songs(pl)
 
 
 def main() -> None:
+    _init_session_state()
     inject_styles()
-    render_topbar()
+    api_base = _api_base_url()
+
     content_left, content_right = st.columns([2.1, 1], gap="large")
     with content_left:
-        render_left_panel()
+        render_left_panel(api_base)
+
+    pl = st.session_state.generated_playlist
+    has_playlist = isinstance(pl, dict) and pl.get("songs") is not None
+    agg = (
+        _aggregates_from_playlist(pl)
+        if has_playlist
+        else {
+            "style": EMPTY_SIGNAL,
+            "time": EMPTY_SIGNAL,
+            "emotion": EMPTY_SIGNAL,
+            "influence": EMPTY_SIGNAL,
+            "geography": EMPTY_SIGNAL,
+            "songs_requested": EMPTY_SIGNAL,
+        }
+    )
     with content_right:
         st.write("")
         st.write("")
-        render_signals_panel()
+        render_signals_panel(agg, has_playlist=has_playlist)
 
 
 if __name__ == "__main__":
