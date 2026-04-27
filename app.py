@@ -1,5 +1,7 @@
 import html
 import os
+from base64 import b64encode
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -16,6 +18,22 @@ DEFAULT_PROMPT = (
 )
 
 EMPTY_SIGNAL = "—"
+LOGO_PATHS = [
+    Path("/Users/konstantinoskonstantelos/.cursor/projects/Users-konstantinoskonstantelos-Documents-soundtrip-frontend/assets/78354dfe-11c5-4d2b-8bb2-6ae97caaa322-d06c52a2-23fb-4629-bf31-f09e8505e30c.png"),
+    Path(__file__).resolve().parent / "assets" / "song_journey_logo.png",
+]
+
+
+def _logo_data_uri() -> str | None:
+    for path in LOGO_PATHS:
+        if not path.exists():
+            continue
+        try:
+            encoded = b64encode(path.read_bytes()).decode("ascii")
+            return f"data:image/png;base64,{encoded}"
+        except OSError:
+            continue
+    return None
 
 
 def _api_base_url() -> str:
@@ -138,6 +156,82 @@ def inject_styles() -> None:
                 max-width: 1220px;
                 padding-top: 1.2rem;
                 padding-bottom: 1.3rem;
+            }
+
+            header[data-testid="stHeader"] {
+                display: none;
+            }
+
+            .top-nav {
+                margin: 0 0 1.15rem 0;
+                border: 1px solid rgba(116, 132, 196, 0.2);
+                border-radius: 14px;
+                background: rgba(8, 13, 27, 0.92);
+                min-height: 66px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 0.6rem 1rem;
+                box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+            }
+
+            .top-nav-left {
+                display: flex;
+                align-items: center;
+                gap: 0.62rem;
+            }
+
+            .top-nav-logo {
+                width: 42px;
+                height: 42px;
+                border-radius: 999px;
+                object-fit: cover;
+                border: 1px solid rgba(169, 138, 255, 0.42);
+                box-shadow: 0 0 18px rgba(170, 101, 255, 0.58);
+            }
+
+            .top-nav-name {
+                color: #f7f9ff;
+                font-weight: 600;
+                font-size: 1.65rem;
+                letter-spacing: -0.01em;
+            }
+
+            .top-nav-tabs {
+                display: flex;
+                align-items: center;
+                gap: 0.6rem;
+            }
+
+            .top-nav-tab {
+                border: 1px solid rgba(133, 149, 215, 0.18);
+                border-radius: 10px;
+                color: #b7c4e2;
+                background: rgba(17, 22, 40, 0.7);
+                min-width: 106px;
+                text-align: center;
+                font-size: 0.89rem;
+                font-weight: 500;
+                padding: 0.45rem 0.7rem;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 0.35rem;
+            }
+
+            .top-nav-tab svg {
+                width: 14px;
+                height: 14px;
+                stroke: currentColor;
+                stroke-width: 1.8;
+                fill: none;
+            }
+
+            .top-nav-tab.active {
+                color: #efe5ff;
+                border-color: rgba(164, 126, 255, 0.68);
+                background: linear-gradient(90deg, rgba(89, 72, 189, 0.7), rgba(128, 63, 201, 0.72));
+                box-shadow: 0 0 14px rgba(144, 82, 255, 0.33);
             }
 
             .hero-title {
@@ -354,6 +448,50 @@ def _signal_row(label: str, value: str) -> str:
     )
 
 
+def render_top_banner() -> None:
+    logo_uri = _logo_data_uri()
+    logo_html = (
+        f'<img class="top-nav-logo" src="{logo_uri}" alt="Song Journey logo" />'
+        if logo_uri
+        else '<div class="top-nav-logo"></div>'
+    )
+    st.markdown(
+        f"""
+        <div class="top-nav">
+            <div class="top-nav-left">
+                {logo_html}
+                <div class="top-nav-name">Song Journey</div>
+            </div>
+            <div class="top-nav-tabs">
+                <div class="top-nav-tab active">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <circle cx="12" cy="12" r="8"></circle>
+                        <circle cx="12" cy="12" r="2.2"></circle>
+                    </svg>
+                    Discover
+                </div>
+                <div class="top-nav-tab">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M9 19V7l10-2v12"></path>
+                        <circle cx="7" cy="19" r="2.6"></circle>
+                        <circle cx="17" cy="17" r="2.6"></circle>
+                    </svg>
+                    Journey
+                </div>
+                <div class="top-nav-tab">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4.5 5.5h5a3 3 0 0 1 3 3v10h-5a3 3 0 0 0-3 3z"></path>
+                        <path d="M19.5 5.5h-5a3 3 0 0 0-3 3v10h5a3 3 0 0 1 3 3z"></path>
+                    </svg>
+                    Library
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_chips(agg: dict[str, str]) -> None:
     inner = "".join(
         [
@@ -420,32 +558,28 @@ def render_left_panel(api_base: str) -> None:
         unsafe_allow_html=True,
     )
 
-    left_input, right_button = st.columns([3.3, 1.4], gap="small")
-    with left_input:
-        st.text_area(
-            "playlist_prompt",
-            height=170,
-            label_visibility="collapsed",
-            key="playlist_prompt",
-        )
-    with right_button:
-        st.write("")
-        st.write("")
-        generate = st.button("✨ Generate Playlist", use_container_width=True)
-        if generate:
-            st.session_state.playlist_error = None
-            prompt = (st.session_state.get("playlist_prompt") or "").strip()
-            if len(prompt) < 5:
-                st.session_state.playlist_error = "Prompt must be at least 5 characters (API requirement)."
-            else:
-                try:
-                    with st.spinner("Generating playlist…"):
-                        st.session_state.generated_playlist = wait_for_playlist(api_base, prompt)
-                    st.toast("Playlist ready!", icon="🎵")
-                except SoundTripAPIError as exc:
-                    st.session_state.playlist_error = str(exc)
-                except requests.RequestException as exc:
-                    st.session_state.playlist_error = f"Network error: {exc}"
+    st.text_area(
+        "playlist_prompt",
+        height=170,
+        label_visibility="collapsed",
+        key="playlist_prompt",
+    )
+
+    generate = st.button("✨ Generate Playlist", use_container_width=True)
+    if generate:
+        st.session_state.playlist_error = None
+        prompt = (st.session_state.get("playlist_prompt") or "").strip()
+        if len(prompt) < 5:
+            st.session_state.playlist_error = "Prompt must be at least 5 characters (API requirement)."
+        else:
+            try:
+                with st.spinner("Generating playlist…"):
+                    st.session_state.generated_playlist = wait_for_playlist(api_base, prompt)
+                st.toast("Playlist ready!", icon="🎵")
+            except SoundTripAPIError as exc:
+                st.session_state.playlist_error = str(exc)
+            except requests.RequestException as exc:
+                st.session_state.playlist_error = f"Network error: {exc}"
 
     if st.session_state.playlist_error:
         st.error(st.session_state.playlist_error)
@@ -462,29 +596,22 @@ def main() -> None:
     _init_session_state()
     inject_styles()
     api_base = _api_base_url()
-
-    content_left, content_right = st.columns([2.1, 1], gap="large")
-    with content_left:
-        render_left_panel(api_base)
+    render_top_banner()
 
     pl = st.session_state.generated_playlist
     has_playlist = isinstance(pl, dict) and pl.get("songs") is not None
-    agg = (
-        _aggregates_from_playlist(pl)
-        if has_playlist
-        else {
-            "style": EMPTY_SIGNAL,
-            "time": EMPTY_SIGNAL,
-            "emotion": EMPTY_SIGNAL,
-            "influence": EMPTY_SIGNAL,
-            "geography": EMPTY_SIGNAL,
-            "songs_requested": EMPTY_SIGNAL,
-        }
-    )
-    with content_right:
-        st.write("")
-        st.write("")
-        render_signals_panel(agg, has_playlist=has_playlist)
+
+    if has_playlist:
+        content_left, content_right = st.columns([2.1, 1], gap="large")
+        with content_left:
+            render_left_panel(api_base)
+        agg = _aggregates_from_playlist(pl)
+        with content_right:
+            st.write("")
+            st.write("")
+            render_signals_panel(agg, has_playlist=True)
+    else:
+        render_left_panel(api_base)
 
 
 if __name__ == "__main__":
