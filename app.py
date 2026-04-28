@@ -618,20 +618,7 @@ def main() -> None:
     discover_tab, journey_tab, library_tab = st.tabs(["◎ Discover", "♫ Journey", "📚 Library"])
 
     with discover_tab:
-        pl = st.session_state.generated_playlist
-        has_playlist = isinstance(pl, dict) and pl.get("songs") is not None
-
-        if has_playlist:
-            content_left, content_right = st.columns([2.1, 1], gap="large")
-            with content_left:
-                render_left_panel(api_base)
-            agg = _aggregates_from_playlist(pl)
-            with content_right:
-                st.write("")
-                st.write("")
-                render_signals_panel(agg, has_playlist=True)
-        else:
-            render_left_panel(api_base)
+        render_left_panel(api_base)
 
     with journey_tab:
         pass
