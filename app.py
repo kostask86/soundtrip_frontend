@@ -197,41 +197,36 @@ def inject_styles() -> None:
                 letter-spacing: -0.01em;
             }
 
-            .top-nav-tabs {
-                display: flex;
-                align-items: center;
+            div[data-testid="stTabs"] {
+                margin-top: -0.35rem;
+                margin-bottom: 0.85rem;
+            }
+
+            div[data-testid="stTabs"] [role="tablist"] {
                 gap: 0.6rem;
             }
 
-            .top-nav-tab {
+            div[data-testid="stTabs"] [role="tab"] {
                 border: 1px solid rgba(133, 149, 215, 0.18);
                 border-radius: 10px;
-                color: #b7c4e2;
                 background: rgba(17, 22, 40, 0.7);
-                min-width: 106px;
-                text-align: center;
-                font-size: 0.89rem;
-                font-weight: 500;
-                padding: 0.45rem 0.7rem;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                gap: 0.35rem;
+                color: #b7c4e2;
+                min-height: 44px;
+                padding: 0 0.95rem;
             }
 
-            .top-nav-tab svg {
-                width: 14px;
-                height: 14px;
-                stroke: currentColor;
-                stroke-width: 1.8;
-                fill: none;
-            }
-
-            .top-nav-tab.active {
+            div[data-testid="stTabs"] [role="tab"][aria-selected="true"] {
                 color: #efe5ff;
                 border-color: rgba(164, 126, 255, 0.68);
                 background: linear-gradient(90deg, rgba(89, 72, 189, 0.7), rgba(128, 63, 201, 0.72));
                 box-shadow: 0 0 14px rgba(144, 82, 255, 0.33);
+            }
+
+            div[data-testid="stTabs"] [role="tab"]::before,
+            div[data-testid="stTabs"] [role="tab"]::after {
+                display: none !important;
+                border-bottom: none !important;
+                box-shadow: none !important;
             }
 
             .hero-title {
@@ -462,30 +457,6 @@ def render_top_banner() -> None:
                 {logo_html}
                 <div class="top-nav-name">Song Journey</div>
             </div>
-            <div class="top-nav-tabs">
-                <div class="top-nav-tab active">
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <circle cx="12" cy="12" r="8"></circle>
-                        <circle cx="12" cy="12" r="2.2"></circle>
-                    </svg>
-                    Discover
-                </div>
-                <div class="top-nav-tab">
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M9 19V7l10-2v12"></path>
-                        <circle cx="7" cy="19" r="2.6"></circle>
-                        <circle cx="17" cy="17" r="2.6"></circle>
-                    </svg>
-                    Journey
-                </div>
-                <div class="top-nav-tab">
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M4.5 5.5h5a3 3 0 0 1 3 3v10h-5a3 3 0 0 0-3 3z"></path>
-                        <path d="M19.5 5.5h-5a3 3 0 0 0-3 3v10h5a3 3 0 0 1 3 3z"></path>
-                    </svg>
-                    Library
-                </div>
-            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -598,20 +569,29 @@ def main() -> None:
     api_base = _api_base_url()
     render_top_banner()
 
-    pl = st.session_state.generated_playlist
-    has_playlist = isinstance(pl, dict) and pl.get("songs") is not None
+    discover_tab, journey_tab, library_tab = st.tabs(["◎ Discover", "♫ Journey", "📚 Library"])
 
-    if has_playlist:
-        content_left, content_right = st.columns([2.1, 1], gap="large")
-        with content_left:
+    with discover_tab:
+        pl = st.session_state.generated_playlist
+        has_playlist = isinstance(pl, dict) and pl.get("songs") is not None
+
+        if has_playlist:
+            content_left, content_right = st.columns([2.1, 1], gap="large")
+            with content_left:
+                render_left_panel(api_base)
+            agg = _aggregates_from_playlist(pl)
+            with content_right:
+                st.write("")
+                st.write("")
+                render_signals_panel(agg, has_playlist=True)
+        else:
             render_left_panel(api_base)
-        agg = _aggregates_from_playlist(pl)
-        with content_right:
-            st.write("")
-            st.write("")
-            render_signals_panel(agg, has_playlist=True)
-    else:
-        render_left_panel(api_base)
+
+    with journey_tab:
+        pass
+
+    with library_tab:
+        pass
 
 
 if __name__ == "__main__":
