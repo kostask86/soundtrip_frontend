@@ -38,7 +38,7 @@ def _raise_for_status(resp: requests.Response) -> None:
     )
 
 
-def post_generate(base_url: str, prompt: str, *, timeout: float = 60.0) -> dict[str, Any]:
+def post_generate(base_url: str, prompt: str, *, timeout: float = 180.0) -> dict[str, Any]:
     url = f"{base_url.rstrip('/')}{GENERATE_PATH}"
     resp = requests.post(url, json={"prompt": prompt}, timeout=timeout)
     _raise_for_status(resp)
@@ -54,14 +54,14 @@ def post_generate(base_url: str, prompt: str, *, timeout: float = 60.0) -> dict[
     return data
 
 
-def get_job(base_url: str, job_id: str, *, timeout: float = 60.0) -> dict[str, Any]:
+def get_job(base_url: str, job_id: str, *, timeout: float = 180.0) -> dict[str, Any]:
     url = f"{base_url.rstrip('/')}{JOBS_PATH.format(job_id=job_id)}"
     resp = requests.get(url, timeout=timeout)
     _raise_for_status(resp)
     return resp.json()
 
 
-def get_playlist(base_url: str, playlist_id: int, *, timeout: float = 60.0) -> dict[str, Any]:
+def get_playlist(base_url: str, playlist_id: int, *, timeout: float = 180.0) -> dict[str, Any]:
     url = f"{base_url.rstrip('/')}{PLAYLIST_PATH.format(playlist_id=playlist_id)}"
     resp = requests.get(url, timeout=timeout)
     _raise_for_status(resp)
@@ -94,7 +94,7 @@ def wait_for_playlist(
     base_url: str,
     prompt: str,
     *,
-    poll_interval: float = 0.75,
+    poll_interval: float = 5.0,
     max_wait_seconds: float = 180.0,
 ) -> dict[str, Any]:
     gen = post_generate(base_url, prompt)

@@ -23,6 +23,15 @@ LOGO_PATHS = [
     Path(__file__).resolve().parent / "assets" / "song_journey_logo.png",
 ]
 
+PANEL_META: dict[str, tuple[str, str]] = {
+    "Style": ("🎸", "style"),
+    "Time": ("🗓️", "time"),
+    "Emotion": ("💗", "emotion"),
+    "Influence": ("🧠", "influence"),
+    "Geography": ("🌍", "geography"),
+    "Songs Requested": ("🎵", "songs"),
+}
+
 
 def _logo_data_uri() -> str | None:
     for path in LOGO_PATHS:
@@ -112,30 +121,30 @@ def _aggregates_from_playlist(playlist: dict[str, Any]) -> dict[str, str]:
 
 
 def _tags_for_song(song: dict[str, Any]) -> list[str]:
-    tags: list[str] = []
+    tags: list[tuple[str, str]] = []
     for st_obj in song.get("styles") or []:
         if isinstance(st_obj, dict) and st_obj.get("label"):
-            tags.append(str(st_obj["label"]))
+            tags.append((str(st_obj["label"]), "style"))
     for em in song.get("emotions") or []:
         if isinstance(em, dict) and em.get("label"):
-            tags.append(str(em["label"]))
+            tags.append((str(em["label"]), "emotion"))
     tm = song.get("time")
     if isinstance(tm, dict) and tm.get("label"):
-        tags.append(str(tm["label"]))
+        tags.append((str(tm["label"]), "time"))
     for inf in song.get("influences") or []:
         if isinstance(inf, dict) and inf.get("label"):
-            tags.append(str(inf["label"]))
+            tags.append((str(inf["label"]), "influence"))
     g = song.get("geography")
     if isinstance(g, dict):
         p = g.get("primary")
         if isinstance(p, dict) and p.get("label"):
-            tags.append(str(p["label"]))
+            tags.append((str(p["label"]), "geography"))
     seen: set[str] = set()
-    ordered: list[str] = []
-    for t in tags:
-        if t not in seen:
-            seen.add(t)
-            ordered.append(t)
+    ordered: list[tuple[str, str]] = []
+    for label, kind in tags:
+        if label not in seen:
+            seen.add(label)
+            ordered.append((label, kind))
     return ordered
 
 
@@ -271,10 +280,20 @@ def inject_styles() -> None:
                 background: rgba(13, 18, 35, 0.92);
             }
 
+            .chip.style { border-color: rgba(158, 126, 255, 0.42); background: rgba(56, 36, 90, 0.32); }
+            .chip.time { border-color: rgba(112, 189, 255, 0.4); background: rgba(30, 58, 101, 0.33); }
+            .chip.emotion { border-color: rgba(255, 120, 170, 0.42); background: rgba(96, 37, 71, 0.34); }
+            .chip.influence { border-color: rgba(95, 225, 196, 0.44); background: rgba(28, 82, 72, 0.32); }
+            .chip.geography { border-color: rgba(255, 200, 102, 0.4); background: rgba(96, 69, 22, 0.33); }
+            .chip.songs { border-color: rgba(255, 170, 110, 0.36); background: rgba(92, 46, 20, 0.32); }
+
             .chip .k {
                 color: #9eb2e7;
                 font-size: 0.72rem;
                 margin-bottom: 0.13rem;
+                display: flex;
+                align-items: center;
+                gap: 0.35rem;
             }
 
             .chip .v {
@@ -334,6 +353,32 @@ def inject_styles() -> None:
                 color: #c8d6f5;
                 font-size: 0.66rem;
                 padding: 0.16rem 0.42rem;
+            }
+
+            .tag-style {
+                border-color: rgba(163, 126, 255, 0.45);
+                background: rgba(56, 38, 95, 0.55);
+                color: #d8c7ff;
+            }
+            .tag-time {
+                border-color: rgba(109, 190, 255, 0.45);
+                background: rgba(31, 59, 101, 0.55);
+                color: #b8e1ff;
+            }
+            .tag-emotion {
+                border-color: rgba(255, 126, 174, 0.45);
+                background: rgba(95, 36, 71, 0.55);
+                color: #ffc6dc;
+            }
+            .tag-influence {
+                border-color: rgba(97, 227, 201, 0.45);
+                background: rgba(29, 82, 72, 0.52);
+                color: #b8f5e7;
+            }
+            .tag-geography {
+                border-color: rgba(255, 205, 116, 0.45);
+                background: rgba(96, 69, 20, 0.52);
+                color: #ffe1b2;
             }
 
             .play-btn {
@@ -428,8 +473,9 @@ def inject_styles() -> None:
 
 
 def _chip(k: str, v: str) -> str:
+    icon, kind = PANEL_META.get(k, ("•", "default"))
     return (
-        f'<div class="chip"><div class="k">{html.escape(k)}</div>'
+        f'<div class="chip {kind}"><div class="k"><span>{icon}</span><span>{html.escape(k)}</span></div>'
         f'<div class="v">{html.escape(v)}</div></div>'
     )
 
@@ -470,6 +516,7 @@ def render_chips(agg: dict[str, str]) -> None:
             _chip("Time", agg["time"]),
             _chip("Emotion", agg["emotion"]),
             _chip("Influence", agg["influence"]),
+            _chip("Geography", agg["geography"]),
             _chip("Songs Requested", agg["songs_requested"]),
         ]
     )
@@ -484,7 +531,9 @@ def render_playlist_songs(playlist: dict[str, Any]) -> None:
         title = str(song.get("title") or "Untitled")
         artist = str(song.get("artist") or "")
         tag_list = _tags_for_song(song)
-        tags_html = "".join(f'<span class="tag">{html.escape(t)}</span>' for t in tag_list)
+        tags_html = "".join(
+            f'<span class="tag tag-{html.escape(kind)}">{html.escape(label)}</span>' for label, kind in tag_list
+        )
         st.markdown(
             f"""
             <div class="song-row">
@@ -502,9 +551,6 @@ def render_playlist_songs(playlist: dict[str, Any]) -> None:
 
 
 def render_signals_panel(agg: dict[str, str], *, has_playlist: bool) -> None:
-    geo_row = ""
-    if has_playlist and agg.get("geography") and agg["geography"] != EMPTY_SIGNAL:
-        geo_row = _signal_row("Geography", agg["geography"])
     st.markdown(
         f"""
         <div class="signals-card">
@@ -513,7 +559,7 @@ def render_signals_panel(agg: dict[str, str], *, has_playlist: bool) -> None:
             {_signal_row("Time", agg["time"] if has_playlist else EMPTY_SIGNAL)}
             {_signal_row("Emotion", agg["emotion"] if has_playlist else EMPTY_SIGNAL)}
             {_signal_row("Influence", agg["influence"] if has_playlist else EMPTY_SIGNAL)}
-            {geo_row}
+            {_signal_row("Geography", agg["geography"] if has_playlist else EMPTY_SIGNAL)}
             {_signal_row("Songs Requested", agg["songs_requested"] if has_playlist else EMPTY_SIGNAL)}
             <div class="wave">~ waveform visualization placeholder ~</div>
         </div>
