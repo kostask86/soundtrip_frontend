@@ -8,7 +8,7 @@ from typing import Any
 import requests
 import streamlit as st
 
-from soundtrip_client import SoundTripAPIError, get_playlist, wait_for_playlist
+from soundtrip_client import SoundTripAPIError, apply_song_metadata, get_playlist, wait_for_playlist
 
 st.set_page_config(page_title="Song Journey", page_icon="🎵", layout="wide")
 
@@ -188,6 +188,62 @@ def _tags_for_song(song: dict[str, Any]) -> list[str]:
             seen.add(label)
             ordered.append((label, kind))
     return ordered
+
+
+def _song_id(song: dict[str, Any]) -> int | str | None:
+    # Prefer playlist item ids exactly as returned by backend.
+    raw = song.get("song_id")
+    if raw is None:
+        raw = song.get("id")
+    if raw is None:
+        raw = song.get("songId")
+    if raw is None:
+        raw = song.get("track_id")
+    if raw is None:
+        raw = song.get("trackId")
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str):
+        trimmed = raw.strip()
+        if not trimmed:
+            return None
+        return int(trimmed) if trimmed.isdigit() else trimmed
+    return None
+
+
+def _song_cover_url(song: dict[str, Any]) -> str:
+    direct = str(song.get("album_cover_url") or "").strip()
+    if direct:
+        return direct
+    album_cover = song.get("album_cover")
+    if isinstance(album_cover, dict):
+        nested = str(album_cover.get("url") or "").strip()
+        if nested:
+            return nested
+    return ""
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _cover_data_uri(url: str) -> str | None:
+    if not url:
+        return None
+    try:
+        resp = requests.get(
+            url,
+            timeout=15,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        if not resp.ok:
+            return None
+        content_type = str(resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if not content_type.startswith("image/"):
+            return None
+        encoded = b64encode(resp.content).decode("ascii")
+        return f"data:{content_type};base64,{encoded}"
+    except requests.RequestException:
+        return None
 
 
 def inject_styles() -> None:
@@ -375,7 +431,7 @@ def inject_styles() -> None:
                 border: 1px solid rgba(130, 149, 210, 0.17);
                 background: rgba(13, 19, 36, 0.95);
                 display: grid;
-                grid-template-columns: 32px 1fr auto;
+                grid-template-columns: 32px 42px 1fr;
                 align-items: center;
                 padding: 0.55rem 0.8rem;
                 margin-bottom: 0.42rem;
@@ -393,6 +449,23 @@ def inject_styles() -> None:
                 font-weight: 600;
                 font-size: 0.95rem;
                 margin-bottom: 0.1rem;
+            }
+
+            .song-cover {
+                width: 38px;
+                height: 38px;
+                border-radius: 7px;
+                object-fit: cover;
+                border: 1px solid rgba(130, 149, 210, 0.28);
+                background: rgba(20, 27, 48, 0.9);
+            }
+
+            .song-cover-empty {
+                width: 38px;
+                height: 38px;
+                border-radius: 7px;
+                border: 1px solid rgba(130, 149, 210, 0.18);
+                background: rgba(20, 27, 48, 0.45);
             }
 
             .song-artist {
@@ -513,7 +586,7 @@ def inject_styles() -> None:
                 display: none;
             }
 
-            div[data-testid="stButton"] button {
+            div[data-testid="stButton"] button[kind="primary"] {
                 width: 100%;
                 border: none;
                 border-radius: 12px;
@@ -524,8 +597,20 @@ def inject_styles() -> None:
                 box-shadow: 0 0 18px rgba(125, 88, 255, 0.46);
             }
 
-            div[data-testid="stButton"] button:hover {
+            div[data-testid="stButton"] button[kind="primary"]:hover {
                 background: linear-gradient(90deg, #7664ff 0%, #c85aff 100%);
+            }
+
+            div[data-testid="stButton"] button[kind="secondary"] {
+                border-radius: 8px;
+                min-height: 1.65rem;
+                height: 1.65rem;
+                padding: 0 0.35rem;
+                font-size: 0.74rem;
+                line-height: 1;
+                background: rgba(21, 29, 53, 0.92);
+                border: 1px solid rgba(123, 140, 196, 0.38);
+                box-shadow: none;
             }
         </style>
         """,
@@ -589,26 +674,80 @@ def render_playlist_songs(playlist: dict[str, Any]) -> None:
     for index, song in enumerate(songs, start=1):
         if not isinstance(song, dict):
             continue
+        sid = _song_id(song)
         title = str(song.get("title") or "Untitled")
         artist = str(song.get("artist") or "")
+        cover_url = _song_cover_url(song)
+        cover_src = _cover_data_uri(cover_url) or cover_url
         tag_list = _tags_for_song(song)
         tags_html = "".join(
             f'<span class="tag tag-{html.escape(kind)}">{html.escape(label)}</span>' for label, kind in tag_list
         )
-        st.markdown(
-            f"""
-            <div class="song-row">
-                <div class="song-num">{index}</div>
-                <div>
-                    <div class="song-title">{html.escape(title)}</div>
-                    <div class="song-artist">{html.escape(artist)}</div>
-                    <div class="song-tags">{tags_html}</div>
-                </div>
-                <div class="play-btn">▷</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        content_col, actions_col = st.columns([9.65, 0.85], vertical_alignment="center")
+        with content_col:
+            num_col, cover_col, info_col = st.columns([0.55, 0.85, 8.25], vertical_alignment="center")
+            with num_col:
+                st.markdown(f'<div class="song-num">{index}</div>', unsafe_allow_html=True)
+            with cover_col:
+                if cover_src:
+                    st.image(cover_src, width=38)
+                else:
+                    st.markdown('<div class="song-cover-empty"></div>', unsafe_allow_html=True)
+            with info_col:
+                st.markdown(
+                    f"""
+                    <div>
+                        <div class="song-title">{html.escape(title)}</div>
+                        <div class="song-artist">{html.escape(artist)}</div>
+                        <div class="song-tags">{tags_html}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        with actions_col:
+            meta_col, play_col = st.columns([1, 1])
+            with meta_col:
+                metadata_clicked = st.button(
+                    "ⓘ",
+                    key=f"song_metadata_{sid}_{index}",
+                    help="Fetch metadata for this song",
+                    use_container_width=True,
+                    type="secondary",
+                )
+            with play_col:
+                st.button(
+                    "▷",
+                    key=f"song_play_{sid}_{index}",
+                    disabled=True,
+                    use_container_width=True,
+                    type="secondary",
+                )
+
+        if metadata_clicked:
+            sid = _song_id(song)
+            if sid is None:
+                st.session_state.playlist_error = "Song id not found for this row."
+            else:
+                try:
+                    result = apply_song_metadata(
+                        _api_base_url(),
+                        sid,
+                        auto=True,
+                        overwrite=True,
+                        min_score=60,
+                    )
+                    updated_song = result.get("song") if isinstance(result.get("song"), dict) else result
+                    if isinstance(updated_song, dict):
+                        merged = dict(song)
+                        merged.update(updated_song)
+                        songs[index - 1] = merged
+                        if isinstance(st.session_state.generated_playlist, dict):
+                            st.session_state.generated_playlist["songs"] = songs
+                    st.toast("Song metadata updated")
+                except SoundTripAPIError as exc:
+                    st.session_state.playlist_error = str(exc)
+                except requests.RequestException as exc:
+                    st.session_state.playlist_error = f"Network error: {exc}"
 
 
 def render_signals_panel(agg: dict[str, str], *, has_playlist: bool) -> None:
@@ -663,7 +802,7 @@ def render_left_panel(api_base: str) -> None:
                 label_visibility="collapsed",
             )
     with generate_col:
-        generate = st.button("🪄 Generate Playlist", use_container_width=True)
+        generate = st.button("🪄 Generate Playlist", use_container_width=True, type="primary")
     with spacer_col:
         st.empty()
     if generate:
