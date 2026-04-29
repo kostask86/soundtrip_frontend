@@ -1,5 +1,6 @@
 import html
 import os
+from collections import Counter
 from base64 import b64encode
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,17 @@ def _ordered_unique_join(values: list[str]) -> str:
     return ", ".join(out) if out else EMPTY_SIGNAL
 
 
+def _top_labels(values: list[str], limit: int) -> list[str]:
+    if not values:
+        return []
+    counts = Counter(values)
+    first_seen: dict[str, int] = {}
+    for idx, label in enumerate(values):
+        first_seen.setdefault(label, idx)
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], first_seen[item[0]]))
+    return [label for label, _ in ranked[:limit]]
+
+
 def _aggregates_from_playlist(playlist: dict[str, Any]) -> dict[str, str]:
     songs = playlist.get("songs") or []
     styles: list[str] = []
@@ -94,55 +106,81 @@ def _aggregates_from_playlist(playlist: dict[str, Any]) -> dict[str, str]:
         if not isinstance(song, dict):
             continue
         for st_obj in song.get("styles") or []:
-            if isinstance(st_obj, dict) and st_obj.get("label"):
+            if (
+                isinstance(st_obj, dict)
+                and str(st_obj.get("role") or "").lower() == "primary"
+                and st_obj.get("label")
+            ):
                 styles.append(str(st_obj["label"]))
+                break
         for em in song.get("emotions") or []:
-            if isinstance(em, dict) and em.get("label"):
+            if not isinstance(em, dict):
+                continue
+            conf = em.get("confidence")
+            conf_val = float(conf) if isinstance(conf, (int, float)) else 0.0
+            if em.get("label") and conf_val >= 0.9:
                 emotions.append(str(em["label"]))
         tm = song.get("time")
         if isinstance(tm, dict) and tm.get("label"):
             times.append(str(tm["label"]))
         for inf in song.get("influences") or []:
-            if isinstance(inf, dict) and inf.get("label"):
+            if not isinstance(inf, dict):
+                continue
+            conf = inf.get("confidence")
+            conf_val = float(conf) if isinstance(conf, (int, float)) else 0.0
+            if inf.get("label") and conf_val >= 0.9:
                 influences.append(str(inf["label"]))
         g = song.get("geography")
         if isinstance(g, dict):
             p = g.get("primary")
             if isinstance(p, dict) and p.get("label"):
                 geos.append(str(p["label"]))
-            for sec in g.get("secondary") or []:
-                if isinstance(sec, dict) and sec.get("label"):
-                    geos.append(str(sec["label"]))
     n = len(songs) if isinstance(songs, list) else 0
     return {
-        "style": _ordered_unique_join(styles),
-        "time": _ordered_unique_join(times),
-        "emotion": _ordered_unique_join(emotions),
-        "influence": _ordered_unique_join(influences),
-        "geography": _ordered_unique_join(geos),
+        "style": _ordered_unique_join(_top_labels(styles, 2)),
+        "time": _ordered_unique_join(_top_labels(times, 2)),
+        "emotion": _ordered_unique_join(_top_labels(emotions, 3)),
+        "influence": _ordered_unique_join(_top_labels(influences, 3)),
+        "geography": _ordered_unique_join(_top_labels(geos, 2)),
         "songs_requested": str(n) if n else EMPTY_SIGNAL,
     }
 
 
 def _tags_for_song(song: dict[str, Any]) -> list[str]:
-    tags: list[tuple[str, str]] = []
+    style_tags: list[tuple[str, str]] = []
+    time_tags: list[tuple[str, str]] = []
+    emotion_tags: list[tuple[str, str]] = []
+    influence_tags: list[tuple[str, str]] = []
+    geography_tags: list[tuple[str, str]] = []
     for st_obj in song.get("styles") or []:
-        if isinstance(st_obj, dict) and st_obj.get("label"):
-            tags.append((str(st_obj["label"]), "style"))
-    for em in song.get("emotions") or []:
-        if isinstance(em, dict) and em.get("label"):
-            tags.append((str(em["label"]), "emotion"))
+        if not isinstance(st_obj, dict):
+            continue
+        if str(st_obj.get("role") or "").lower() == "primary" and st_obj.get("label"):
+            style_tags.append((str(st_obj["label"]), "style"))
+            break
     tm = song.get("time")
     if isinstance(tm, dict) and tm.get("label"):
-        tags.append((str(tm["label"]), "time"))
+        time_tags.append((str(tm["label"]), "time"))
+    for em in song.get("emotions") or []:
+        if not isinstance(em, dict):
+            continue
+        conf = em.get("confidence")
+        conf_val = float(conf) if isinstance(conf, (int, float)) else 0.0
+        if em.get("label") and conf_val >= 0.9:
+            emotion_tags.append((str(em["label"]), "emotion"))
     for inf in song.get("influences") or []:
-        if isinstance(inf, dict) and inf.get("label"):
-            tags.append((str(inf["label"]), "influence"))
+        if not isinstance(inf, dict):
+            continue
+        conf = inf.get("confidence")
+        conf_val = float(conf) if isinstance(conf, (int, float)) else 0.0
+        if inf.get("label") and conf_val >= 0.9:
+            influence_tags.append((str(inf["label"]), "influence"))
     g = song.get("geography")
     if isinstance(g, dict):
         p = g.get("primary")
         if isinstance(p, dict) and p.get("label"):
-            tags.append((str(p["label"]), "geography"))
+            geography_tags.append((str(p["label"]), "geography"))
+    tags = style_tags + time_tags + emotion_tags + influence_tags + geography_tags
     seen: set[str] = set()
     ordered: list[tuple[str, str]] = []
     for label, kind in tags:
