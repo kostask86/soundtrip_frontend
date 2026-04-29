@@ -7,7 +7,7 @@ from typing import Any
 import requests
 import streamlit as st
 
-from soundtrip_client import SoundTripAPIError, wait_for_playlist
+from soundtrip_client import SoundTripAPIError, get_playlist, wait_for_playlist
 
 st.set_page_config(page_title="Song Journey", page_icon="🎵", layout="wide")
 
@@ -24,12 +24,12 @@ LOGO_PATHS = [
 ]
 
 PANEL_META: dict[str, tuple[str, str]] = {
-    "Style": ("🎸", "style"),
-    "Time": ("🗓️", "time"),
-    "Emotion": ("💗", "emotion"),
-    "Influence": ("🧠", "influence"),
-    "Geography": ("🌍", "geography"),
-    "Songs Requested": ("🎵", "songs"),
+    "Style": ("◌", "style"),
+    "Time": ("◷", "time"),
+    "Emotion": ("♡", "emotion"),
+    "Influence": ("◎", "influence"),
+    "Geography": ("◍", "geography"),
+    "Songs Requested": ("♪", "songs"),
 }
 
 
@@ -65,6 +65,10 @@ def _init_session_state() -> None:
         st.session_state.playlist_error = None
     if "playlist_prompt" not in st.session_state:
         st.session_state.playlist_prompt = DEFAULT_PROMPT
+    if "load_playlist_id_text" not in st.session_state:
+        st.session_state.load_playlist_id_text = ""
+    if "pending_playlist_prompt" not in st.session_state:
+        st.session_state.pending_playlist_prompt = None
 
 
 def _ordered_unique_join(values: list[str]) -> str:
@@ -191,8 +195,8 @@ def inject_styles() -> None:
             }
 
             .top-nav-logo {
-                width: 42px;
-                height: 42px;
+                width: 95px;
+                height: 95px;
                 border-radius: 999px;
                 object-fit: cover;
                 border: 1px solid rgba(169, 138, 255, 0.42);
@@ -249,8 +253,27 @@ def inject_styles() -> None:
 
             .hero-sub {
                 color: #b3c0de;
-                font-size: 1.05rem;
+                font-size: 1.2rem;
                 margin-bottom: 0.95rem;
+            }
+
+            .load-playlist-label {
+                color: #7f8fb4;
+                font-size: 0.83rem;
+                margin-top: 0.3rem;
+                white-space: nowrap;
+            }
+
+            div[data-testid="stTextInput"] input {
+                min-height: 2rem;
+                height: 2rem;
+                font-size: 0.9rem;
+                padding-top: 0.2rem;
+                padding-bottom: 0.2rem;
+            }
+
+            .generated-playlist-spacer {
+                height: 1rem;
             }
 
             .main-card, .signals-card, .playlist-card {
@@ -543,7 +566,7 @@ def render_playlist_songs(playlist: dict[str, Any]) -> None:
                     <div class="song-artist">{html.escape(artist)}</div>
                     <div class="song-tags">{tags_html}</div>
                 </div>
-                <div class="play-btn">▶</div>
+                <div class="play-btn">▷</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -575,28 +598,73 @@ def render_left_panel(api_base: str) -> None:
         unsafe_allow_html=True,
     )
 
-    st.text_area(
-        "playlist_prompt",
-        height=170,
-        label_visibility="collapsed",
-        key="playlist_prompt",
-    )
+    pending_prompt = st.session_state.get("pending_playlist_prompt")
+    if isinstance(pending_prompt, str):
+        st.session_state.playlist_prompt = pending_prompt
+        st.session_state.pending_playlist_prompt = None
 
-    generate = st.button("✨ Generate Playlist", use_container_width=True)
+    prompt_col, generate_col, spacer_col = st.columns([5.0, 1.8, 2.8])
+    with prompt_col:
+        st.text_area(
+            "playlist_prompt",
+            height=170,
+            label_visibility="collapsed",
+            key="playlist_prompt",
+        )
+        load_text_col, load_gap_col, load_input_col, _ = st.columns([1.5, 0.25, 0.9, 7.35])
+        with load_text_col:
+            st.markdown('<div class="load-playlist-label">Load Playlist by id</div>', unsafe_allow_html=True)
+        with load_gap_col:
+            st.empty()
+        with load_input_col:
+            st.text_input(
+                "Load Playlist by id",
+                value="",
+                placeholder="id",
+                key="load_playlist_id_text",
+                label_visibility="collapsed",
+            )
+    with generate_col:
+        generate = st.button("🪄 Generate Playlist", use_container_width=True)
+    with spacer_col:
+        st.empty()
     if generate:
         st.session_state.playlist_error = None
-        prompt = (st.session_state.get("playlist_prompt") or "").strip()
-        if len(prompt) < 5:
-            st.session_state.playlist_error = "Prompt must be at least 5 characters (API requirement)."
+        typed_id = str(st.session_state.get("load_playlist_id_text") or "").strip()
+        if typed_id:
+            if not typed_id.isdigit():
+                st.session_state.playlist_error = "Playlist id must be a number."
+            else:
+                try:
+                    loaded = get_playlist(api_base, int(typed_id))
+                    st.session_state.generated_playlist = loaded
+                    loaded_prompt = str(loaded.get("user_prompt") or loaded.get("prompt") or "").strip()
+                    if loaded_prompt:
+                        st.session_state.pending_playlist_prompt = loaded_prompt
+                        st.rerun()
+                    st.toast("Playlist loaded")
+                except SoundTripAPIError as exc:
+                    # Keep default Discover view for missing ids.
+                    if exc.status_code == 404:
+                        st.session_state.generated_playlist = None
+                        st.session_state.playlist_error = None
+                    else:
+                        st.session_state.playlist_error = str(exc)
+                except requests.RequestException as exc:
+                    st.session_state.playlist_error = f"Network error: {exc}"
         else:
-            try:
-                with st.spinner("Generating playlist…"):
-                    st.session_state.generated_playlist = wait_for_playlist(api_base, prompt)
-                st.toast("Playlist ready!", icon="🎵")
-            except SoundTripAPIError as exc:
-                st.session_state.playlist_error = str(exc)
-            except requests.RequestException as exc:
-                st.session_state.playlist_error = f"Network error: {exc}"
+            prompt = (st.session_state.get("playlist_prompt") or "").strip()
+            if len(prompt) < 5:
+                st.session_state.playlist_error = "Prompt must be at least 5 characters (API requirement)."
+            else:
+                try:
+                    with st.spinner("Generating playlist…"):
+                        st.session_state.generated_playlist = wait_for_playlist(api_base, prompt)
+                    st.toast("Playlist ready!")
+                except SoundTripAPIError as exc:
+                    st.session_state.playlist_error = str(exc)
+                except requests.RequestException as exc:
+                    st.session_state.playlist_error = f"Network error: {exc}"
 
     if st.session_state.playlist_error:
         st.error(st.session_state.playlist_error)
@@ -605,7 +673,8 @@ def render_left_panel(api_base: str) -> None:
     if isinstance(pl, dict) and pl.get("songs") is not None:
         agg = _aggregates_from_playlist(pl)
         render_chips(agg)
-        st.markdown('<div class="section-title">🎵 Generated Playlist</div>', unsafe_allow_html=True)
+        st.markdown('<div class="generated-playlist-spacer"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">♪ Generated Playlist</div>', unsafe_allow_html=True)
         render_playlist_songs(pl)
 
 
@@ -615,7 +684,7 @@ def main() -> None:
     api_base = _api_base_url()
     render_top_banner()
 
-    discover_tab, journey_tab, library_tab = st.tabs(["◎ Discover", "♫ Journey", "📚 Library"])
+    discover_tab, journey_tab, library_tab = st.tabs(["⌖ Discover", "↝ Journey", "📚 Library"])
 
     with discover_tab:
         render_left_panel(api_base)
