@@ -56,7 +56,7 @@ def _api_base_url() -> str:
             return str(sec).strip().rstrip("/")
     except (FileNotFoundError, AttributeError, RuntimeError):
         pass
-    return "http://127.0.0.1:8000"
+    return "http://127.0.0.1:8001"
 
 
 def _init_session_state() -> None:
@@ -223,6 +223,19 @@ def _song_cover_url(song: dict[str, Any]) -> str:
         if nested:
             return nested
     return ""
+
+
+def _song_hover_tooltip(song: dict[str, Any]) -> str:
+    album_obj = song.get("album")
+    album_name = ""
+    release_year = str(song.get("release_year") or "").strip()
+    if isinstance(album_obj, dict):
+        album_name = str(album_obj.get("name") or album_obj.get("title") or "").strip()
+    elif isinstance(album_obj, str):
+        album_name = album_obj.strip()
+    album_display = album_name or EMPTY_SIGNAL
+    year_display = release_year or EMPTY_SIGNAL
+    return f"Album: {album_display}\nRecording Year: {year_display}"
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -677,6 +690,7 @@ def render_playlist_songs(playlist: dict[str, Any]) -> None:
         sid = _song_id(song)
         title = str(song.get("title") or "Untitled")
         artist = str(song.get("artist") or "")
+        tooltip = _song_hover_tooltip(song)
         cover_url = _song_cover_url(song)
         cover_src = _cover_data_uri(cover_url) or cover_url
         tag_list = _tags_for_song(song)
@@ -696,7 +710,7 @@ def render_playlist_songs(playlist: dict[str, Any]) -> None:
             with info_col:
                 st.markdown(
                     f"""
-                    <div>
+                    <div title="{html.escape(tooltip)}">
                         <div class="song-title">{html.escape(title)}</div>
                         <div class="song-artist">{html.escape(artist)}</div>
                         <div class="song-tags">{tags_html}</div>
