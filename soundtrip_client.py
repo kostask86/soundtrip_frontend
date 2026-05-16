@@ -10,6 +10,7 @@ import requests
 GENERATE_PATH = "/api/v1/playlists/generate"
 JOBS_PATH = "/api/v1/playlists/jobs/{job_id}"
 PLAYLIST_PATH = "/api/v1/playlists/{playlist_id}"
+SONG_PATH = "/api/v1/songs/{song_id}"
 SONG_METADATA_APPLY_PATH = "/api/v1/songs/{song_id}/metadata/apply"
 
 
@@ -64,6 +65,13 @@ def get_job(base_url: str, job_id: str, *, timeout: float = 180.0) -> dict[str, 
 
 def get_playlist(base_url: str, playlist_id: int, *, timeout: float = 180.0) -> dict[str, Any]:
     url = f"{base_url.rstrip('/')}{PLAYLIST_PATH.format(playlist_id=playlist_id)}"
+    resp = requests.get(url, timeout=timeout)
+    _raise_for_status(resp)
+    return resp.json()
+
+
+def get_song(base_url: str, song_id: int | str, *, timeout: float = 180.0) -> dict[str, Any]:
+    url = f"{base_url.rstrip('/')}{SONG_PATH.format(song_id=song_id)}"
     resp = requests.get(url, timeout=timeout)
     _raise_for_status(resp)
     return resp.json()
@@ -133,6 +141,9 @@ def wait_for_playlist(
 
         pl = job.get("playlist")
         if isinstance(pl, dict) and pl.get("songs") is not None:
+            pid = pl.get("id") or job.get("playlist_id")
+            if pid is not None:
+                return get_playlist(base_url, int(pid))
             return pl
 
         if _job_is_failed(last_status):

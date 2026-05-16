@@ -5,9 +5,23 @@ from base64 import b64encode
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+import pydeck as pdk
 import requests
 import streamlit as st
+from pydeck.data_utils import compute_view
 
+from geo import (
+    JourneyPoint,
+    build_cluster_path_segments,
+    build_journey_points,
+    build_map_clusters,
+    cluster_tooltip_html,
+    clusters_in_playlist_order,
+    enrich_songs_with_locations,
+    extract_location,
+    songs_have_locations,
+)
 from soundtrip_client import SoundTripAPIError, apply_song_metadata, get_playlist, wait_for_playlist
 
 st.set_page_config(page_title="Song Journey", page_icon="🎵", layout="wide")
@@ -70,6 +84,58 @@ def _init_session_state() -> None:
         st.session_state.load_playlist_id_text = ""
     if "pending_playlist_prompt" not in st.session_state:
         st.session_state.pending_playlist_prompt = None
+    if "active_playlist_id" not in st.session_state:
+        st.session_state.active_playlist_id = None
+
+
+def _resolve_playlist_id(playlist: dict[str, Any] | None = None) -> int | None:
+    typed = str(st.session_state.get("load_playlist_id_text") or "").strip()
+    if typed.isdigit():
+        return int(typed)
+
+    active = st.session_state.get("active_playlist_id")
+    if active is not None:
+        try:
+            return int(active)
+        except (TypeError, ValueError):
+            pass
+
+    pl = playlist if isinstance(playlist, dict) else st.session_state.get("generated_playlist")
+    if isinstance(pl, dict) and pl.get("id") is not None:
+        try:
+            return int(pl["id"])
+        except (TypeError, ValueError):
+            pass
+
+    return None
+
+
+def _set_active_playlist(playlist: dict[str, Any]) -> None:
+    st.session_state.generated_playlist = playlist
+    pid = playlist.get("id")
+    if pid is not None:
+        try:
+            st.session_state.active_playlist_id = int(pid)
+        except (TypeError, ValueError):
+            pass
+    st.session_state.pop("journey_song_locations", None)
+
+
+def _load_playlist_for_journey(api_base: str) -> dict[str, Any] | None:
+    """Reload playlist via GET so songs include city/country from the API."""
+    pid = _resolve_playlist_id()
+    if pid is not None:
+        try:
+            playlist = get_playlist(api_base, pid)
+            _set_active_playlist(playlist)
+            return playlist
+        except SoundTripAPIError:
+            pass
+
+    pl = st.session_state.get("generated_playlist")
+    if isinstance(pl, dict) and pl.get("songs") is not None:
+        return pl
+    return None
 
 
 def _ordered_unique_join(values: list[str]) -> str:
@@ -625,6 +691,155 @@ def inject_styles() -> None:
                 border: 1px solid rgba(123, 140, 196, 0.38);
                 box-shadow: none;
             }
+
+            .journey-empty {
+                border-radius: 16px;
+                border: 1px dashed rgba(143, 160, 223, 0.28);
+                background: rgba(12, 18, 36, 0.75);
+                padding: 2.5rem 1.5rem;
+                text-align: center;
+                color: #b3c0de;
+                font-size: 1.05rem;
+            }
+
+            .journey-empty strong {
+                color: #efe5ff;
+            }
+
+            .journey-panel {
+                border-radius: 18px;
+                border: 1px solid rgba(130, 149, 210, 0.18);
+                background: linear-gradient(180deg, rgba(15, 21, 42, 0.86) 0%, rgba(10, 14, 30, 0.9) 100%);
+                box-shadow: 0 8px 26px rgba(0, 0, 0, 0.45);
+                padding: 1rem 1.05rem;
+                max-height: 620px;
+                overflow-y: auto;
+            }
+
+            .journey-panel-title {
+                color: #f4f8ff;
+                font-weight: 700;
+                font-size: 1.08rem;
+                margin-bottom: 0.65rem;
+            }
+
+            .journey-panel-footer {
+                margin-top: 0.85rem;
+                padding-top: 0.65rem;
+                border-top: 1px solid rgba(143, 160, 223, 0.15);
+                color: #9db1de;
+                font-size: 0.78rem;
+            }
+
+            .journey-stop {
+                display: flex;
+                gap: 0.55rem;
+                align-items: center;
+                padding: 0.45rem 0;
+            }
+
+            .journey-index {
+                flex-shrink: 0;
+                width: 26px;
+                height: 26px;
+                border-radius: 999px;
+                border: 1px solid rgba(255, 200, 102, 0.45);
+                background: rgba(96, 69, 22, 0.45);
+                color: #ffe1b2;
+                font-size: 0.78rem;
+                font-weight: 700;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            .journey-index.unmapped {
+                border-color: rgba(143, 160, 223, 0.35);
+                background: rgba(27, 36, 64, 0.75);
+                color: #9db1de;
+            }
+
+            .journey-stop-body {
+                flex: 1;
+                min-width: 0;
+            }
+
+            .journey-stop-title {
+                color: #f1f5ff;
+                font-weight: 600;
+                font-size: 0.9rem;
+                line-height: 1.25;
+            }
+
+            .journey-stop-artist {
+                color: #9db1dd;
+                font-size: 0.78rem;
+                margin-top: 0.08rem;
+            }
+
+            .journey-stop-location {
+                color: #ffc86a;
+                font-size: 0.74rem;
+                margin-top: 0.2rem;
+            }
+
+            .journey-stop-location.muted {
+                color: #7f8fb4;
+            }
+
+            .journey-connector {
+                margin: 0 0 0 12px;
+                width: 2px;
+                height: 18px;
+                background: linear-gradient(180deg, rgba(163, 126, 255, 0.7), rgba(255, 200, 102, 0.5));
+                border-radius: 2px;
+            }
+
+            .journey-map-note {
+                color: #9db1de;
+                font-size: 0.82rem;
+                margin-bottom: 0.45rem;
+            }
+
+            .journey-playlist-meta {
+                color: #9db1de;
+                font-size: 0.78rem;
+                margin: 0 0 0.75rem 0;
+                letter-spacing: 0.01em;
+            }
+
+            .journey-playlist-meta strong {
+                color: #c8d6f5;
+                font-weight: 600;
+            }
+
+            .journey-map-wrap {
+                border-radius: 14px;
+                border: 1px solid rgba(130, 149, 210, 0.22);
+                overflow: hidden;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+            }
+
+            .journey-stop-cover-wrap {
+                flex-shrink: 0;
+            }
+
+            .journey-stop-cover {
+                width: 40px;
+                height: 40px;
+                border-radius: 6px;
+                object-fit: cover;
+                border: 1px solid rgba(130, 149, 210, 0.28);
+                display: block;
+            }
+
+                '<div class="journey-stop-cover-empty"></div>'
+                width: 40px;
+                height: 40px;
+                border-radius: 6px;
+                border: 1px solid rgba(130, 149, 210, 0.18);
+                background: rgba(20, 27, 48, 0.45);
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -764,22 +979,289 @@ def render_playlist_songs(playlist: dict[str, Any]) -> None:
                     st.session_state.playlist_error = f"Network error: {exc}"
 
 
-def render_signals_panel(agg: dict[str, str], *, has_playlist: bool) -> None:
+MAP_STYLE_OPENFREEMAP_DARK = "https://tiles.openfreemap.org/styles/dark"
+MAP_STYLE_CARTO_VOYAGER = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
+MAX_VISIBLE_MAP_LABELS = 5
+LABEL_LINE_HEIGHT_PX = 16
+LABEL_BASE_OFFSET_PX = 28
+
+
+def render_world_map(points: list[JourneyPoint]) -> None:
+    if not points:
+        st.info(
+            "No songs could be placed on the map. Load a playlist by id on Discover "
+            "(songs need city and country from the API), then reopen Journey."
+        )
+        return
+
+    clusters = build_map_clusters(points)
+    clusters_ordered = clusters_in_playlist_order(points, clusters)
+
+    scatter_rows = [
+        {
+            "lon": c.lng,
+            "lat": c.lat,
+            "tooltip": cluster_tooltip_html(c),
+            "marker_px": min(18, 9 + 2 * (c.song_count - 1)),
+        }
+        for c in clusters
+    ]
+    scatter_df = pd.DataFrame(scatter_rows)
+
+    text_rows: list[dict[str, Any]] = []
+    for cluster in clusters:
+        visible = cluster.songs[:MAX_VISIBLE_MAP_LABELS]
+        for i, song in enumerate(visible):
+            title = song.title if len(song.title) <= 32 else f"{song.title[:31]}…"
+            text_rows.append(
+                {
+                    "lon": cluster.lng,
+                    "lat": cluster.lat,
+                    "text": f"{song.order}. {title}",
+                    "offset_y": -(LABEL_BASE_OFFSET_PX + i * LABEL_LINE_HEIGHT_PX),
+                }
+            )
+        remaining = len(cluster.songs) - len(visible)
+        if remaining > 0:
+            i = len(visible)
+            text_rows.append(
+                {
+                    "lon": cluster.lng,
+                    "lat": cluster.lat,
+                    "text": f"+{remaining} more",
+                    "offset_y": -(LABEL_BASE_OFFSET_PX + i * LABEL_LINE_HEIGHT_PX),
+                }
+            )
+
+    text_df = pd.DataFrame(text_rows) if text_rows else pd.DataFrame(columns=["lon", "lat", "text", "offset_y"])
+
+    path_data = [{"path": seg} for seg in build_cluster_path_segments(clusters_ordered)]
+    layers: list[pdk.Layer] = []
+
+    if path_data:
+        layers.append(
+            pdk.Layer(
+                "PathLayer",
+                data=path_data,
+                get_path="path",
+                get_color=[163, 126, 255, 175],
+                get_width=3,
+                width_min_pixels=2,
+                pickable=False,
+            )
+        )
+
+    layers.append(
+        pdk.Layer(
+            "ScatterplotLayer",
+            data=scatter_df,
+            get_position="[lon, lat]",
+            get_fill_color=[255, 200, 102, 220],
+            get_line_color=[255, 255, 255, 180],
+            get_radius="marker_px",
+            radius_min_pixels=9,
+            radius_max_pixels=18,
+            line_width_min_pixels=1,
+            pickable=True,
+        )
+    )
+
+    if not text_df.empty:
+        font_size = 12 if any(c.song_count > 3 for c in clusters) else 13
+        layers.append(
+            pdk.Layer(
+                "TextLayer",
+                data=text_df,
+                get_position="[lon, lat]",
+                get_text="text",
+                get_size=font_size,
+                get_color=[255, 255, 255, 245],
+                get_alignment_baseline="'bottom'",
+                get_pixel_offset="[0, offset_y]",
+            )
+        )
+
+    positions = [[c.lng, c.lat] for c in clusters]
+    view = compute_view(positions, view_proportion=0.82)
+    view_state = pdk.ViewState(
+        latitude=view.latitude,
+        longitude=view.longitude,
+        zoom=max(view.zoom - 0.35, 1.5),
+        pitch=20,
+        bearing=0,
+    )
+
+    deck = pdk.Deck(
+        layers=layers,
+        initial_view_state=view_state,
+        map_style=MAP_STYLE_OPENFREEMAP_DARK,
+        tooltip={"html": "{tooltip}", "style": {"backgroundColor": "#0f1528", "color": "#eaf2ff"}},
+    )
+    st.markdown('<div class="journey-map-wrap">', unsafe_allow_html=True)
+    st.pydeck_chart(deck, use_container_width=True, height=560)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_song_journey_panel(
+    songs: list[dict[str, Any]],
+    points: list[JourneyPoint],
+    *,
+    unmapped: int,
+) -> None:
+    point_by_order = {p.order: p for p in points}
+    mapped_count = len(points)
+    total = len([s for s in songs if isinstance(s, dict)])
+    valid_songs = [(order, s) for order, s in enumerate(songs, start=1) if isinstance(s, dict)]
+
+    parts: list[str] = []
+    for idx, (order, song) in enumerate(valid_songs):
+        loc = extract_location(song)
+        jp = point_by_order.get(order)
+        if jp is not None:
+            loc_label = jp.location_label
+            loc_class = "journey-stop-location"
+            index_class = "journey-index"
+        else:
+            loc_label = loc.display
+            loc_class = "journey-stop-location muted"
+            index_class = "journey-index unmapped"
+
+        title = str(song.get("title") or "Untitled")
+        artist = str(song.get("artist") or "")
+        cover_url = _song_cover_url(song)
+        cover_src = _cover_data_uri(cover_url) or cover_url
+        if cover_src:
+            cover_html = (
+                f'<div class="journey-stop-cover-wrap">'
+                f'<img class="journey-stop-cover" src="{html.escape(cover_src, quote=True)}" alt="" />'
+                f"</div>"
+            )
+        else:
+            cover_html = (
+                '<div class="journey-stop-cover-wrap">'
+                '<div class="journey-stop-cover-empty"></div>'
+                "</div>"
+            )
+
+        parts.append(
+            f'<div class="journey-stop">'
+            f'<div class="{index_class}">{order}</div>'
+            f"{cover_html}"
+            f'<div class="journey-stop-body">'
+            f'<div class="journey-stop-title">{html.escape(title)}</div>'
+            f'<div class="journey-stop-artist">{html.escape(artist)}</div>'
+            f'<div class="{loc_class}">{html.escape(loc_label)}</div>'
+            f"</div></div>"
+        )
+        if idx < len(valid_songs) - 1:
+            parts.append('<div class="journey-connector"></div>')
+
+    body = "".join(parts)
+
+    footer = f"{mapped_count} of {total} songs placed on the map"
+    if unmapped:
+        footer += f" · {unmapped} unmapped"
+
     st.markdown(
         f"""
-        <div class="signals-card">
-            <div class="signals-title">Journey Signals</div>
-            {_signal_row("Style", agg["style"] if has_playlist else EMPTY_SIGNAL)}
-            {_signal_row("Time", agg["time"] if has_playlist else EMPTY_SIGNAL)}
-            {_signal_row("Emotion", agg["emotion"] if has_playlist else EMPTY_SIGNAL)}
-            {_signal_row("Influence", agg["influence"] if has_playlist else EMPTY_SIGNAL)}
-            {_signal_row("Geography", agg["geography"] if has_playlist else EMPTY_SIGNAL)}
-            {_signal_row("Songs Requested", agg["songs_requested"] if has_playlist else EMPTY_SIGNAL)}
-            <div class="wave">~ waveform visualization placeholder ~</div>
+        <div class="journey-panel">
+            <div class="journey-panel-title">Song Journey</div>
+            {body}
+            <div class="journey-panel-footer">{html.escape(footer)}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_journey_tab(api_base: str) -> None:
+    pid = _resolve_playlist_id()
+    if pid is None and not isinstance(st.session_state.get("generated_playlist"), dict):
+        st.markdown(
+            """
+            <div class="journey-empty">
+                <strong>No playlist yet</strong><br/>
+                Generate or load a playlist on the <strong>Discover</strong> tab (e.g. enter id <strong>1</strong> and generate),
+                then return here to see your world map and song journey.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    try:
+        with st.spinner("Loading playlist…"):
+            pl = _load_playlist_for_journey(api_base)
+    except requests.RequestException as exc:
+        st.error(f"Network error loading playlist: {exc}")
+        return
+
+    if not isinstance(pl, dict) or pl.get("songs") is None:
+        st.markdown(
+            """
+            <div class="journey-empty">
+                <strong>Could not load playlist</strong><br/>
+                Enter a playlist id on Discover and generate, or check that the backend is running.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    songs_raw = pl.get("songs") or []
+    songs = [s for s in songs_raw if isinstance(s, dict)]
+    if not songs:
+        st.markdown(
+            '<div class="journey-empty"><strong>Playlist has no songs</strong></div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    try:
+        with st.spinner("Placing songs on the map…"):
+            songs = enrich_songs_with_locations(api_base, pl, songs)
+            points, unmapped = build_journey_points(songs)
+    except Exception as exc:
+        st.warning(f"Could not geocode some locations: {exc}")
+        points, unmapped = [], len(songs)
+
+    playlist_id = pl.get("id")
+    if playlist_id is not None:
+        try:
+            playlist_id_display = str(int(playlist_id))
+        except (TypeError, ValueError):
+            playlist_id_display = str(playlist_id)
+    else:
+        playlist_id_display = str(_resolve_playlist_id() or "—")
+
+    title_bit = ""
+    pl_title = pl.get("title")
+    if isinstance(pl_title, str) and pl_title.strip():
+        title_bit = f' · <span>{html.escape(pl_title.strip())}</span>'
+
+    st.markdown(
+        f'<div class="journey-playlist-meta">Loaded playlist <strong>#{html.escape(playlist_id_display)}</strong>{title_bit}</div>',
+        unsafe_allow_html=True,
+    )
+
+    map_col, panel_col = st.columns([2.1, 1.0], gap="medium")
+    with map_col:
+        if unmapped and not points and songs_have_locations(songs):
+            st.warning(
+                "Songs have city/country but could not be geocoded. "
+                "Check your internet connection, restart the app, and try Journey again."
+            )
+        elif unmapped:
+            st.markdown(
+                f'<div class="journey-map-note">{html.escape(str(unmapped))} song(s) could not be placed on the map.</div>',
+                unsafe_allow_html=True,
+            )
+        render_world_map(points)
+    with panel_col:
+        render_song_journey_panel(songs, points, unmapped=unmapped)
+
+
+
 
 
 def render_left_panel(api_base: str) -> None:
@@ -789,36 +1271,39 @@ def render_left_panel(api_base: str) -> None:
         unsafe_allow_html=True,
     )
 
-    pending_prompt = st.session_state.get("pending_playlist_prompt")
+    pending_prompt = st.session_state.pop("pending_playlist_prompt", None)
     if isinstance(pending_prompt, str):
         st.session_state.playlist_prompt = pending_prompt
-        st.session_state.pending_playlist_prompt = None
 
-    prompt_col, generate_col, spacer_col = st.columns([5.0, 1.8, 2.8])
-    with prompt_col:
-        st.text_area(
-            "playlist_prompt",
-            height=170,
-            label_visibility="collapsed",
-            key="playlist_prompt",
-        )
-        load_text_col, load_gap_col, load_input_col, _ = st.columns([1.5, 0.25, 0.9, 7.35])
-        with load_text_col:
-            st.markdown('<div class="load-playlist-label">Load Playlist by id</div>', unsafe_allow_html=True)
-        with load_gap_col:
-            st.empty()
-        with load_input_col:
-            st.text_input(
-                "Load Playlist by id",
-                value="",
-                placeholder="id",
-                key="load_playlist_id_text",
+    with st.form("playlist_form", clear_on_submit=False):
+        prompt_col, generate_col, spacer_col = st.columns([5.0, 1.8, 2.8])
+        with prompt_col:
+            st.text_area(
+                "playlist_prompt",
+                height=170,
                 label_visibility="collapsed",
+                key="playlist_prompt",
             )
-    with generate_col:
-        generate = st.button("🪄 Generate Playlist", use_container_width=True, type="primary")
-    with spacer_col:
-        st.empty()
+            load_text_col, load_gap_col, load_input_col, _ = st.columns([1.5, 0.25, 0.9, 7.35])
+            with load_text_col:
+                st.markdown(
+                    '<div class="load-playlist-label">Load Playlist by id</div>',
+                    unsafe_allow_html=True,
+                )
+            with load_gap_col:
+                st.empty()
+            with load_input_col:
+                st.text_input(
+                    "Load Playlist by id",
+                    placeholder="id",
+                    key="load_playlist_id_text",
+                    label_visibility="collapsed",
+                )
+        with generate_col:
+            generate = st.form_submit_button("🪄 Generate Playlist", use_container_width=True)
+        with spacer_col:
+            st.empty()
+
     if generate:
         st.session_state.playlist_error = None
         typed_id = str(st.session_state.get("load_playlist_id_text") or "").strip()
@@ -826,19 +1311,19 @@ def render_left_panel(api_base: str) -> None:
             if not typed_id.isdigit():
                 st.session_state.playlist_error = "Playlist id must be a number."
             else:
+                playlist_id = int(typed_id)
+                st.session_state.active_playlist_id = playlist_id
                 try:
-                    loaded = get_playlist(api_base, int(typed_id))
-                    st.session_state.generated_playlist = loaded
+                    loaded = get_playlist(api_base, playlist_id)
+                    _set_active_playlist(loaded)
                     loaded_prompt = str(loaded.get("user_prompt") or loaded.get("prompt") or "").strip()
                     if loaded_prompt:
                         st.session_state.pending_playlist_prompt = loaded_prompt
-                        st.rerun()
-                    st.toast("Playlist loaded")
+                    st.toast(f"Playlist {playlist_id} loaded")
                 except SoundTripAPIError as exc:
-                    # Keep default Discover view for missing ids.
+                    st.session_state.generated_playlist = None
                     if exc.status_code == 404:
-                        st.session_state.generated_playlist = None
-                        st.session_state.playlist_error = None
+                        st.session_state.playlist_error = f"Playlist {playlist_id} not found."
                     else:
                         st.session_state.playlist_error = str(exc)
                 except requests.RequestException as exc:
@@ -850,8 +1335,9 @@ def render_left_panel(api_base: str) -> None:
             else:
                 try:
                     with st.spinner("Generating playlist…"):
-                        st.session_state.generated_playlist = wait_for_playlist(api_base, prompt)
-                    st.toast("Playlist ready!")
+                        playlist = wait_for_playlist(api_base, prompt)
+                        _set_active_playlist(playlist)
+                    st.toast("Playlist ready! Open the Journey tab to see your map.")
                 except SoundTripAPIError as exc:
                     st.session_state.playlist_error = str(exc)
                 except requests.RequestException as exc:
@@ -881,7 +1367,7 @@ def main() -> None:
         render_left_panel(api_base)
 
     with journey_tab:
-        pass
+        render_journey_tab(api_base)
 
     with library_tab:
         pass
