@@ -44,8 +44,19 @@ PANEL_META: dict[str, tuple[str, str]] = {
     "Emotion": ("♡", "emotion"),
     "Influence": ("◎", "influence"),
     "Geography": ("◍", "geography"),
+    "Songs": ("♪", "songs"),
     "Songs Requested": ("♪", "songs"),
 }
+
+# Accent colors for numbered stops (map sidebar + journey path), cycling by song order.
+JOURNEY_STOP_COLORS: list[dict[str, str]] = [
+    {"border": "#9b7aff", "bg": "rgba(100, 72, 200, 0.5)", "text": "#e8dcff", "loc": "#c4a8ff"},
+    {"border": "#ff6eb8", "bg": "rgba(170, 48, 115, 0.5)", "text": "#ffd0e8", "loc": "#ff92c8"},
+    {"border": "#5eb8ff", "bg": "rgba(40, 95, 175, 0.5)", "text": "#d4ecff", "loc": "#7ec8ff"},
+    {"border": "#ff9a5c", "bg": "rgba(175, 85, 35, 0.5)", "text": "#ffe4cc", "loc": "#ffb878"},
+    {"border": "#5ee8c8", "bg": "rgba(35, 130, 105, 0.5)", "text": "#d0fff0", "loc": "#78e8c8"},
+    {"border": "#c87aff", "bg": "rgba(130, 60, 180, 0.5)", "text": "#f0d8ff", "loc": "#dda8ff"},
+]
 
 
 def _logo_data_uri() -> str | None:
@@ -254,6 +265,51 @@ def _tags_for_song(song: dict[str, Any]) -> list[str]:
             seen.add(label)
             ordered.append((label, kind))
     return ordered
+
+
+def _primary_style_label(song: dict[str, Any]) -> str:
+    for st_obj in song.get("styles") or []:
+        if not isinstance(st_obj, dict):
+            continue
+        if str(st_obj.get("role") or "").lower() == "primary" and st_obj.get("label"):
+            return str(st_obj["label"])
+    return ""
+
+
+def _journey_color_index(order: int) -> int:
+    return (max(order, 1) - 1) % len(JOURNEY_STOP_COLORS)
+
+
+def _journey_index_style(order: int, *, mapped: bool) -> str:
+    if not mapped:
+        return (
+            "border-color: rgba(143, 160, 223, 0.35); "
+            "background: rgba(27, 36, 64, 0.75); color: #9db1de;"
+        )
+    c = JOURNEY_STOP_COLORS[_journey_color_index(order)]
+    return f"border-color: {c['border']}; background: {c['bg']}; color: {c['text']};"
+
+
+def _journey_location_color(order: int, *, mapped: bool) -> str:
+    if not mapped:
+        return "#7f8fb4"
+    return JOURNEY_STOP_COLORS[_journey_color_index(order)]["loc"]
+
+
+def _city_for_journey_path(
+    song: dict[str, Any],
+    order: int,
+    point_by_order: dict[int, JourneyPoint],
+) -> str:
+    jp = point_by_order.get(order)
+    if jp is not None and jp.city and jp.city.strip():
+        return jp.city.strip()
+    loc = extract_location(song)
+    if loc.city and loc.city.strip():
+        return loc.city.strip()
+    if loc.country and loc.country.strip():
+        return loc.country.strip()
+    return "Unknown"
 
 
 def _song_id(song: dict[str, Any]) -> int | str | None:
@@ -706,6 +762,34 @@ def inject_styles() -> None:
                 color: #efe5ff;
             }
 
+            .journey-hero-title {
+                font-family: Georgia, "Times New Roman", serif;
+                font-size: 2.65rem;
+                font-weight: 600;
+                line-height: 1.12;
+                margin: 0.1rem 0 0.35rem 0;
+                letter-spacing: -0.02em;
+                color: #f9fbff;
+            }
+
+            .journey-hero-title .journey-gradient {
+                background: linear-gradient(90deg, #b89cff 0%, #ff8ec8 55%, #7ec8ff 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+
+            .journey-hero-sub {
+                color: #9db1de;
+                font-size: 1.05rem;
+                margin: 0 0 1rem 0;
+                line-height: 1.45;
+            }
+
+            .journey-chips {
+                margin-bottom: 1.1rem;
+            }
+
             .journey-panel {
                 border-radius: 18px;
                 border: 1px solid rgba(130, 149, 210, 0.18);
@@ -716,11 +800,20 @@ def inject_styles() -> None:
                 overflow-y: auto;
             }
 
-            .journey-panel-title {
+            .journey-panel-title,
+            .route-stops-header {
                 color: #f4f8ff;
                 font-weight: 700;
                 font-size: 1.08rem;
                 margin-bottom: 0.65rem;
+                display: flex;
+                align-items: center;
+                gap: 0.4rem;
+            }
+
+            .route-stops-icon {
+                color: #ff9a6a;
+                font-size: 1rem;
             }
 
             .journey-panel-footer {
@@ -736,6 +829,23 @@ def inject_styles() -> None:
                 gap: 0.55rem;
                 align-items: center;
                 padding: 0.45rem 0;
+            }
+
+            .journey-stop-genre {
+                flex-shrink: 0;
+                align-self: center;
+                max-width: 5.5rem;
+                padding: 0.2rem 0.45rem;
+                border-radius: 999px;
+                border: 1px solid rgba(158, 126, 255, 0.45);
+                background: rgba(56, 36, 90, 0.4);
+                color: #d8c8ff;
+                font-size: 0.62rem;
+                line-height: 1.2;
+                text-align: center;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
 
             .journey-index {
@@ -801,18 +911,6 @@ def inject_styles() -> None:
                 margin-bottom: 0.45rem;
             }
 
-            .journey-playlist-meta {
-                color: #9db1de;
-                font-size: 0.78rem;
-                margin: 0 0 0.75rem 0;
-                letter-spacing: 0.01em;
-            }
-
-            .journey-playlist-meta strong {
-                color: #c8d6f5;
-                font-weight: 600;
-            }
-
             .journey-map-wrap {
                 border-radius: 14px;
                 border: 1px solid rgba(130, 149, 210, 0.22);
@@ -833,12 +931,77 @@ def inject_styles() -> None:
                 display: block;
             }
 
-                '<div class="journey-stop-cover-empty"></div>'
+            .journey-stop-cover-empty {
                 width: 40px;
                 height: 40px;
                 border-radius: 6px;
                 border: 1px solid rgba(130, 149, 210, 0.18);
                 background: rgba(20, 27, 48, 0.45);
+            }
+
+            .journey-path-bar {
+                margin-top: 1rem;
+                border-radius: 16px;
+                border: 1px solid rgba(130, 149, 210, 0.2);
+                background: linear-gradient(180deg, rgba(15, 21, 42, 0.9) 0%, rgba(10, 14, 30, 0.94) 100%);
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+                padding: 0.85rem 1.1rem;
+            }
+
+            .journey-path-title {
+                color: #f4f8ff;
+                font-weight: 700;
+                font-size: 1rem;
+                margin-bottom: 0.55rem;
+                display: flex;
+                align-items: center;
+                gap: 0.35rem;
+            }
+
+            .journey-path-flow {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 0.35rem 0.5rem;
+            }
+
+            .journey-path-step {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.35rem;
+                font-size: 0.88rem;
+                color: #edf4ff;
+            }
+
+            .journey-path-index {
+                width: 22px;
+                height: 22px;
+                border-radius: 999px;
+                border: 1px solid rgba(255, 200, 102, 0.45);
+                font-size: 0.72rem;
+                font-weight: 700;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                flex-shrink: 0;
+            }
+
+            .journey-path-city {
+                font-weight: 500;
+            }
+
+            .journey-path-arrow {
+                color: #7f8fb4;
+                font-size: 0.85rem;
+                margin: 0 0.1rem;
+            }
+
+            .route-stops-note {
+                margin-top: 0.65rem;
+                padding-top: 0.55rem;
+                border-top: 1px solid rgba(143, 160, 223, 0.12);
+                color: #7f8fb4;
+                font-size: 0.74rem;
             }
         </style>
         """,
@@ -895,6 +1058,33 @@ def render_chips(agg: dict[str, str]) -> None:
         ]
     )
     st.markdown(f'<div class="chip-row">{inner}</div>', unsafe_allow_html=True)
+
+
+def render_journey_header() -> None:
+    st.markdown(
+        """
+        <div class="journey-hero-title">
+            Follow your playlist <span class="journey-gradient">journey</span>
+        </div>
+        <div class="journey-hero-sub">
+            Trace how your playlist moves across cities, scenes, and continents.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_journey_chips(agg: dict[str, str]) -> None:
+    inner = "".join(
+        [
+            _chip("Style", agg["style"]),
+            _chip("Time", agg["time"]),
+            _chip("Emotion", agg["emotion"]),
+            _chip("Influence", agg["influence"]),
+            _chip("Songs", agg["songs_requested"]),
+        ]
+    )
+    st.markdown(f'<div class="chip-row journey-chips">{inner}</div>', unsafe_allow_html=True)
 
 
 def render_playlist_songs(playlist: dict[str, Any]) -> None:
@@ -979,7 +1169,7 @@ def render_playlist_songs(playlist: dict[str, Any]) -> None:
                     st.session_state.playlist_error = f"Network error: {exc}"
 
 
-MAP_STYLE_OPENFREEMAP_DARK = "https://tiles.openfreemap.org/styles/dark"
+MAP_STYLE_CARTO_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
 MAP_STYLE_CARTO_VOYAGER = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
 MAX_VISIBLE_MAP_LABELS = 5
 LABEL_LINE_HEIGHT_PX = 16
@@ -1002,7 +1192,10 @@ def render_world_map(points: list[JourneyPoint]) -> None:
             "lon": c.lng,
             "lat": c.lat,
             "tooltip": cluster_tooltip_html(c),
-            "marker_px": min(18, 9 + 2 * (c.song_count - 1)),
+            # pydeck get_radius is in meters; pixel size is clamped separately.
+            "radius_m": 55_000 + min(c.song_count - 1, 6) * 6_000,
+            "radius_min_px": min(20, 10 + 2 * (c.song_count - 1)),
+            "radius_max_px": min(26, 14 + 2 * (c.song_count - 1)),
         }
         for c in clusters
     ]
@@ -1058,9 +1251,9 @@ def render_world_map(points: list[JourneyPoint]) -> None:
             get_position="[lon, lat]",
             get_fill_color=[255, 200, 102, 220],
             get_line_color=[255, 255, 255, 180],
-            get_radius="marker_px",
-            radius_min_pixels=9,
-            radius_max_pixels=18,
+            get_radius="radius_m",
+            radius_min_pixels="radius_min_px",
+            radius_max_pixels="radius_max_px",
             line_width_min_pixels=1,
             pickable=True,
         )
@@ -1094,15 +1287,20 @@ def render_world_map(points: list[JourneyPoint]) -> None:
     deck = pdk.Deck(
         layers=layers,
         initial_view_state=view_state,
-        map_style=MAP_STYLE_OPENFREEMAP_DARK,
+        map_style=MAP_STYLE_CARTO_DARK,
         tooltip={"html": "{tooltip}", "style": {"backgroundColor": "#0f1528", "color": "#eaf2ff"}},
     )
     st.markdown('<div class="journey-map-wrap">', unsafe_allow_html=True)
-    st.pydeck_chart(deck, use_container_width=True, height=560)
+    try:
+        st.pydeck_chart(deck, width="stretch", height=560)
+    except TypeError:
+        st.pydeck_chart(deck, use_container_width=True, height=560)
+    except Exception as exc:
+        st.error(f"Map could not be rendered: {exc}")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_song_journey_panel(
+def render_route_stops_panel(
     songs: list[dict[str, Any]],
     points: list[JourneyPoint],
     *,
@@ -1117,17 +1315,15 @@ def render_song_journey_panel(
     for idx, (order, song) in enumerate(valid_songs):
         loc = extract_location(song)
         jp = point_by_order.get(order)
-        if jp is not None:
-            loc_label = jp.location_label
-            loc_class = "journey-stop-location"
-            index_class = "journey-index"
-        else:
-            loc_label = loc.display
-            loc_class = "journey-stop-location muted"
-            index_class = "journey-index unmapped"
+        mapped = jp is not None
+        loc_label = jp.location_label if mapped else loc.display
+        index_style = _journey_index_style(order, mapped=mapped)
+        loc_color = _journey_location_color(order, mapped=mapped)
+        loc_style = f"color: {loc_color};" if mapped else "color: #7f8fb4;"
 
         title = str(song.get("title") or "Untitled")
         artist = str(song.get("artist") or "")
+        genre = _primary_style_label(song)
         cover_url = _song_cover_url(song)
         cover_src = _cover_data_uri(cover_url) or cover_url
         if cover_src:
@@ -1143,35 +1339,87 @@ def render_song_journey_panel(
                 "</div>"
             )
 
+        genre_html = ""
+        if genre:
+            genre_html = f'<div class="journey-stop-genre">{html.escape(genre)}</div>'
+
         parts.append(
             f'<div class="journey-stop">'
-            f'<div class="{index_class}">{order}</div>'
+            f'<div class="journey-index" style="{index_style}">{order}</div>'
             f"{cover_html}"
             f'<div class="journey-stop-body">'
             f'<div class="journey-stop-title">{html.escape(title)}</div>'
             f'<div class="journey-stop-artist">{html.escape(artist)}</div>'
-            f'<div class="{loc_class}">{html.escape(loc_label)}</div>'
-            f"</div></div>"
+            f'<div class="journey-stop-location" style="{loc_style}">{html.escape(loc_label)}</div>'
+            f"</div>"
+            f"{genre_html}"
+            f"</div>"
         )
         if idx < len(valid_songs) - 1:
             parts.append('<div class="journey-connector"></div>')
 
     body = "".join(parts)
 
-    footer = f"{mapped_count} of {total} songs placed on the map"
-    if unmapped:
-        footer += f" · {unmapped} unmapped"
+    note = ""
+    if unmapped or mapped_count < total:
+        note = f'<div class="route-stops-note">{mapped_count} of {total} on map'
+        if unmapped:
+            note += f" · {unmapped} unmapped"
+        note += "</div>"
 
     st.markdown(
         f"""
         <div class="journey-panel">
-            <div class="journey-panel-title">Song Journey</div>
+            <div class="route-stops-header">
+                <span class="route-stops-icon">◎</span>
+                <span>Route Stops</span>
+            </div>
             {body}
-            <div class="journey-panel-footer">{html.escape(footer)}</div>
+            {note}
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_journey_path(
+    songs: list[dict[str, Any]],
+    points: list[JourneyPoint],
+) -> None:
+    point_by_order = {p.order: p for p in points}
+    valid_songs = [(order, s) for order, s in enumerate(songs, start=1) if isinstance(s, dict)]
+    if not valid_songs:
+        return
+
+    steps: list[str] = []
+    for idx, (order, song) in enumerate(valid_songs):
+        city = _city_for_journey_path(song, order, point_by_order)
+        mapped = point_by_order.get(order) is not None
+        index_style = _journey_index_style(order, mapped=mapped)
+        city_color = _journey_location_color(order, mapped=mapped)
+        steps.append(
+            f'<span class="journey-path-step">'
+            f'<span class="journey-path-index" style="{index_style}">{order}</span>'
+            f'<span class="journey-path-city" style="color: {city_color};">{html.escape(city)}</span>'
+            f"</span>"
+        )
+        if idx < len(valid_songs) - 1:
+            steps.append('<span class="journey-path-arrow">→</span>')
+
+    flow = "".join(steps)
+    st.markdown(
+        f"""
+        <div class="journey-path-bar">
+            <div class="journey-path-title">
+                <span>↝</span>
+                <span>Journey Path</span>
+            </div>
+            <div class="journey-path-flow">{flow}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 
 def render_journey_tab(api_base: str) -> None:
@@ -1225,24 +1473,8 @@ def render_journey_tab(api_base: str) -> None:
         st.warning(f"Could not geocode some locations: {exc}")
         points, unmapped = [], len(songs)
 
-    playlist_id = pl.get("id")
-    if playlist_id is not None:
-        try:
-            playlist_id_display = str(int(playlist_id))
-        except (TypeError, ValueError):
-            playlist_id_display = str(playlist_id)
-    else:
-        playlist_id_display = str(_resolve_playlist_id() or "—")
-
-    title_bit = ""
-    pl_title = pl.get("title")
-    if isinstance(pl_title, str) and pl_title.strip():
-        title_bit = f' · <span>{html.escape(pl_title.strip())}</span>'
-
-    st.markdown(
-        f'<div class="journey-playlist-meta">Loaded playlist <strong>#{html.escape(playlist_id_display)}</strong>{title_bit}</div>',
-        unsafe_allow_html=True,
-    )
+    render_journey_header()
+    render_journey_chips(_aggregates_from_playlist(pl))
 
     map_col, panel_col = st.columns([2.1, 1.0], gap="medium")
     with map_col:
@@ -1258,7 +1490,9 @@ def render_journey_tab(api_base: str) -> None:
             )
         render_world_map(points)
     with panel_col:
-        render_song_journey_panel(songs, points, unmapped=unmapped)
+        render_route_stops_panel(songs, points, unmapped=unmapped)
+
+    render_journey_path(songs, points)
 
 
 
