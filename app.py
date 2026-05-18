@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import html
 import os
 from collections import Counter
@@ -24,7 +26,14 @@ from geo import (
 )
 from soundtrip_client import SoundTripAPIError, apply_song_metadata, get_playlist, wait_for_playlist
 
-st.set_page_config(page_title="Song Journey", page_icon="🎵", layout="wide")
+_APP_DIR = Path(__file__).resolve().parent
+LOGO_PATH = _APP_DIR / "logo.png"
+
+st.set_page_config(
+    page_title="Song Journey",
+    page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🎵",
+    layout="wide",
+)
 
 DEFAULT_PROMPT = (
     "Create a 6-song playlist with psychedelic rock and blues rock from the late 1960s and early "
@@ -33,10 +42,6 @@ DEFAULT_PROMPT = (
 )
 
 EMPTY_SIGNAL = "—"
-LOGO_PATHS = [
-    Path("/Users/konstantinoskonstantelos/.cursor/projects/Users-konstantinoskonstantelos-Documents-soundtrip-frontend/assets/78354dfe-11c5-4d2b-8bb2-6ae97caaa322-d06c52a2-23fb-4629-bf31-f09e8505e30c.png"),
-    Path(__file__).resolve().parent / "assets" / "song_journey_logo.png",
-]
 
 PANEL_META: dict[str, tuple[str, str]] = {
     "Style": ("◌", "style"),
@@ -60,15 +65,13 @@ JOURNEY_STOP_COLORS: list[dict[str, str]] = [
 
 
 def _logo_data_uri() -> str | None:
-    for path in LOGO_PATHS:
-        if not path.exists():
-            continue
-        try:
-            encoded = b64encode(path.read_bytes()).decode("ascii")
-            return f"data:image/png;base64,{encoded}"
-        except OSError:
-            continue
-    return None
+    if not LOGO_PATH.exists():
+        return None
+    try:
+        encoded = b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+    except OSError:
+        return None
 
 
 def _api_base_url() -> str:
@@ -1499,9 +1502,15 @@ def render_journey_tab(api_base: str) -> None:
 
 
 def render_left_panel(api_base: str) -> None:
-    st.markdown('<div class="hero-title">Describe your perfect playlist</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="hero-sub">Tell us the style, time period, emotions, influences, and number of songs you want.</div>',
+        """
+        <div class="journey-hero-title">
+            Describe your <span class="journey-gradient">perfect</span> playlist
+        </div>
+        <div class="journey-hero-sub">
+            Tell us the style, time period, emotions, influences, and number of songs you want.
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
