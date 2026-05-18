@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import math
 import os
 from collections import Counter
 from base64 import b64encode
@@ -96,10 +97,12 @@ def _init_session_state() -> None:
         st.session_state.playlist_prompt = DEFAULT_PROMPT
     if "load_playlist_id_text" not in st.session_state:
         st.session_state.load_playlist_id_text = ""
-    if "pending_playlist_prompt" not in st.session_state:
-        st.session_state.pending_playlist_prompt = None
     if "active_playlist_id" not in st.session_state:
         st.session_state.active_playlist_id = None
+    if "journey_selected_stop_order" not in st.session_state:
+        st.session_state.journey_selected_stop_order = None
+    if "journey_lens_song_order" not in st.session_state:
+        st.session_state.journey_lens_song_order = None
 
 
 def _resolve_playlist_id(playlist: dict[str, Any] | None = None) -> int | None:
@@ -313,6 +316,114 @@ def _city_for_journey_path(
     if loc.country and loc.country.strip():
         return loc.country.strip()
     return "Unknown"
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    earth_radius_km = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2.0) ** 2
+    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    return earth_radius_km * c
+
+
+def _adjacency_rows(
+    points: list[JourneyPoint],
+    lens_order: int,
+    *,
+    limit: int = 6,
+) -> list[dict[str, Any]]:
+    """Rank other mapped stops by geographic proximity to the lens stop.
+
+    Returns rows ordered by ascending distance with a heuristic match percent and
+    a coarse region label ("same region" within ~250 km or same country, else
+    "nearby region").
+    """
+    selected = next((p for p in points if p.order == lens_order), None)
+    if selected is None:
+        return []
+
+    others = [p for p in points if p.order != lens_order]
+    if not others:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for other in others:
+        distance = _haversine_km(selected.lat, selected.lng, other.lat, other.lng)
+        same_country = bool(
+            selected.country
+            and other.country
+            and selected.country.strip().lower() == other.country.strip().lower()
+        )
+        same_region = same_country or distance < 250.0
+        label = "same region" if same_region else "nearby region"
+        if distance <= 50.0:
+            percent = 96
+        elif distance <= 250.0:
+            percent = max(85, 96 - int((distance - 50.0) / 25.0))
+        elif distance <= 2000.0:
+            percent = max(72, 85 - int((distance - 250.0) / 130.0))
+        else:
+            percent = max(60, 72 - int((distance - 2000.0) / 1500.0))
+        rows.append(
+            {
+                "order": other.order,
+                "distance_km": distance,
+                "label": label,
+                "percent": percent,
+            }
+        )
+
+    rows.sort(key=lambda r: r["distance_km"])
+    return rows[:limit]
+
+
+def _match_blurb(song: dict[str, Any]) -> str:
+    """Build a short 'Why this match?' sentence from the song's signals."""
+
+    def _first_label(items: Any, *, conf_threshold: float = 0.0) -> str:
+        if not isinstance(items, list):
+            return ""
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            label = entry.get("label")
+            if not label:
+                continue
+            if conf_threshold > 0.0:
+                conf = entry.get("confidence")
+                conf_val = float(conf) if isinstance(conf, (int, float)) else 0.0
+                if conf_val < conf_threshold:
+                    continue
+            return str(label).strip()
+        return ""
+
+    style = _primary_style_label(song)
+    time_label = ""
+    tm = song.get("time")
+    if isinstance(tm, dict) and tm.get("label"):
+        time_label = str(tm["label"]).strip()
+    emotion = _first_label(song.get("emotions"), conf_threshold=0.9)
+    influence = _first_label(song.get("influences"), conf_threshold=0.9)
+
+    parts: list[str] = []
+    if style:
+        parts.append(f"{style.lower()} style")
+    if time_label:
+        parts.append(f"{time_label.lower()} era")
+    if emotion:
+        parts.append(f"{emotion.lower()} emotion")
+    if influence:
+        parts.append(f"{influence.lower()} roots")
+
+    if not parts:
+        return "A distinctive entry in this journey."
+    if len(parts) == 1:
+        return f"Shares {parts[0]} with the rest of the journey."
+    body = ", ".join(parts[:-1])
+    return f"Shares {body}, and {parts[-1]} with the rest of the journey."
 
 
 def _song_id(song: dict[str, Any]) -> int | str | None:
@@ -1006,6 +1117,405 @@ def inject_styles() -> None:
                 color: #7f8fb4;
                 font-size: 0.74rem;
             }
+
+            .journey-stop.selected {
+                border-radius: 12px;
+                background: linear-gradient(180deg, rgba(78, 52, 168, 0.32) 0%, rgba(48, 30, 110, 0.28) 100%);
+                box-shadow: 0 0 0 1px rgba(184, 156, 255, 0.55), 0 0 18px rgba(155, 122, 255, 0.32);
+                padding: 0.55rem 0.6rem;
+            }
+
+            div[data-testid="stButton"] button[aria-label="Select"],
+            div[data-testid="stButton"] button[aria-label="Selected"] {
+                width: 100%;
+                min-height: 1.65rem;
+                height: 1.65rem;
+                padding: 0 0.4rem;
+                font-size: 0.7rem;
+                line-height: 1;
+                color: #cdd6ef;
+                background: rgba(21, 29, 53, 0.85);
+                border: 1px solid rgba(123, 140, 196, 0.32);
+                border-radius: 8px;
+                box-shadow: none;
+            }
+
+            div[data-testid="stButton"] button[aria-label="Selected"] {
+                color: #efe5ff;
+                background: linear-gradient(90deg, rgba(89, 72, 189, 0.55), rgba(128, 63, 201, 0.55));
+                border-color: rgba(184, 156, 255, 0.55);
+            }
+
+            div[data-testid="stButton"]:has(button[aria-label="✦"]) {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+            }
+
+            div[data-testid="stButton"] button[aria-label="✦"] {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 2.4rem;
+                min-width: 2.4rem;
+                max-width: 2.4rem;
+                height: 2.4rem;
+                min-height: 2.4rem;
+                padding: 0;
+                margin: 0;
+                font-size: 1.05rem;
+                line-height: 1;
+                color: #efe5ff;
+                background: linear-gradient(135deg, rgba(103, 80, 255, 0.9) 0%, rgba(177, 70, 255, 0.9) 100%);
+                border: 1px solid rgba(184, 156, 255, 0.55);
+                border-radius: 10px;
+                box-shadow: 0 0 10px rgba(155, 122, 255, 0.35);
+                transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+            }
+
+            div[data-testid="stButton"] button[aria-label="✦"] p,
+            div[data-testid="stButton"] button[aria-label="✦"] div {
+                margin: 0 !important;
+                padding: 0 !important;
+                line-height: 1 !important;
+            }
+
+            div[data-testid="stButton"] button[aria-label="✦"]:hover {
+                transform: translateY(-1px);
+                box-shadow: 0 0 14px rgba(184, 156, 255, 0.65);
+                filter: brightness(1.08);
+            }
+
+            div[data-testid="stButton"] button[aria-label="✦"]:active {
+                transform: translateY(0);
+                filter: brightness(0.95);
+            }
+
+            div[data-testid="stButton"] button[aria-label="← Back to Journey"] {
+                min-height: 1.95rem;
+                height: 1.95rem;
+                padding: 0 0.8rem;
+                font-size: 0.8rem;
+                color: #cdd6ef;
+                background: rgba(15, 21, 42, 0.85);
+                border: 1px solid rgba(123, 140, 196, 0.35);
+                border-radius: 8px;
+                box-shadow: none;
+            }
+
+            .lens-filter-row {
+                display: flex;
+                gap: 0.5rem;
+                margin: 0.1rem 0 0.85rem 0;
+                flex-wrap: wrap;
+            }
+
+            .lens-filter-chip {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.35rem;
+                border: 1px solid rgba(133, 149, 215, 0.22);
+                border-radius: 999px;
+                background: rgba(17, 22, 40, 0.75);
+                color: #b7c4e2;
+                padding: 0.42rem 0.95rem;
+                font-size: 0.85rem;
+                line-height: 1;
+            }
+
+            .lens-filter-chip.active {
+                color: #efe5ff;
+                border-color: rgba(184, 156, 255, 0.7);
+                background: linear-gradient(90deg, rgba(89, 72, 189, 0.55), rgba(128, 63, 201, 0.55));
+                box-shadow: 0 0 14px rgba(144, 82, 255, 0.3);
+            }
+
+            .lens-filter-chip.disabled {
+                opacity: 0.6;
+            }
+
+            .lens-selected-card {
+                border-radius: 18px;
+                border: 1px solid rgba(184, 156, 255, 0.32);
+                background: linear-gradient(180deg, rgba(33, 22, 72, 0.78) 0%, rgba(15, 12, 38, 0.86) 100%);
+                box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+                padding: 1rem 1.05rem;
+                margin-bottom: 0.9rem;
+            }
+
+            .lens-selected-header {
+                color: #efe5ff;
+                font-weight: 700;
+                font-size: 0.95rem;
+                margin-bottom: 0.75rem;
+                display: flex;
+                align-items: center;
+                gap: 0.4rem;
+            }
+
+            .lens-selected-top {
+                display: grid;
+                grid-template-columns: 96px 1fr;
+                gap: 0.85rem;
+                align-items: flex-start;
+                margin-bottom: 0.85rem;
+            }
+
+            .lens-selected-cover,
+            .lens-selected-cover-empty {
+                width: 96px;
+                height: 96px;
+                border-radius: 10px;
+                object-fit: cover;
+                border: 1px solid rgba(184, 156, 255, 0.4);
+                box-shadow: 0 0 14px rgba(155, 122, 255, 0.35);
+                background: rgba(20, 27, 48, 0.85);
+            }
+
+            .lens-selected-title {
+                color: #f6f2ff;
+                font-weight: 700;
+                font-size: 1.08rem;
+                line-height: 1.2;
+            }
+
+            .lens-selected-artist {
+                color: #b9c4e6;
+                font-size: 0.84rem;
+                margin-top: 0.18rem;
+            }
+
+            .lens-selected-pills {
+                display: flex;
+                gap: 0.35rem;
+                margin: 0.55rem 0 0.35rem 0;
+                flex-wrap: wrap;
+            }
+
+            .lens-selected-pill {
+                border: 1px solid rgba(131, 146, 214, 0.3);
+                background: rgba(27, 36, 64, 0.75);
+                border-radius: 999px;
+                color: #c8d6f5;
+                font-size: 0.7rem;
+                padding: 0.16rem 0.5rem;
+            }
+
+            .lens-selected-pill.year {
+                border-color: rgba(109, 190, 255, 0.45);
+                background: rgba(31, 59, 101, 0.55);
+                color: #b8e1ff;
+            }
+
+            .lens-selected-pill.style {
+                border-color: rgba(163, 126, 255, 0.5);
+                background: rgba(56, 38, 95, 0.55);
+                color: #d8c7ff;
+            }
+
+            .lens-selected-location {
+                color: #ffc86a;
+                font-size: 0.82rem;
+                margin-top: 0.25rem;
+            }
+
+            .lens-meta-grid {
+                display: flex;
+                flex-direction: column;
+                gap: 0.5rem;
+                border-top: 1px solid rgba(143, 160, 223, 0.15);
+                padding-top: 0.75rem;
+            }
+
+            .lens-meta-row {
+                display: grid;
+                grid-template-columns: 26px 90px 1fr;
+                align-items: center;
+                gap: 0.5rem;
+            }
+
+            .lens-meta-icon {
+                color: #b89cff;
+                font-size: 1rem;
+                text-align: center;
+            }
+
+            .lens-meta-label {
+                color: #9db1de;
+                font-size: 0.78rem;
+            }
+
+            .lens-meta-value {
+                color: #edf4ff;
+                font-size: 0.84rem;
+                line-height: 1.3;
+            }
+
+            .lens-match-blurb {
+                margin-top: 0.85rem;
+                padding-top: 0.7rem;
+                border-top: 1px solid rgba(143, 160, 223, 0.15);
+                color: #cdd6ef;
+                font-size: 0.83rem;
+                line-height: 1.45;
+            }
+
+            .lens-match-blurb-title {
+                color: #efe5ff;
+                font-weight: 600;
+                margin-bottom: 0.3rem;
+                display: flex;
+                align-items: center;
+                gap: 0.35rem;
+            }
+
+            .lens-adjacent-panel {
+                border-radius: 18px;
+                border: 1px solid rgba(130, 149, 210, 0.18);
+                background: linear-gradient(180deg, rgba(15, 21, 42, 0.86) 0%, rgba(10, 14, 30, 0.9) 100%);
+                box-shadow: 0 8px 26px rgba(0, 0, 0, 0.45);
+                padding: 1rem 1.05rem;
+            }
+
+            .lens-adjacent-header {
+                color: #f4f8ff;
+                font-weight: 700;
+                font-size: 1rem;
+                margin-bottom: 0.7rem;
+                display: flex;
+                align-items: center;
+                gap: 0.4rem;
+            }
+
+            .lens-adjacent-row {
+                display: grid;
+                grid-template-columns: 22px 38px 1fr auto auto;
+                gap: 0.55rem;
+                align-items: center;
+                padding: 0.42rem 0;
+                border-bottom: 1px solid rgba(143, 160, 223, 0.1);
+            }
+
+            .lens-adjacent-row:last-of-type {
+                border-bottom: none;
+            }
+
+            .lens-adjacent-rank {
+                color: #9db1de;
+                font-size: 0.78rem;
+                text-align: center;
+            }
+
+            .lens-adjacent-cover,
+            .lens-adjacent-cover-empty {
+                width: 38px;
+                height: 38px;
+                border-radius: 6px;
+                object-fit: cover;
+                border: 1px solid rgba(130, 149, 210, 0.28);
+                background: rgba(20, 27, 48, 0.85);
+            }
+
+            .lens-adjacent-title {
+                color: #f1f5ff;
+                font-weight: 600;
+                font-size: 0.85rem;
+                line-height: 1.15;
+            }
+
+            .lens-adjacent-artist {
+                color: #9db1dd;
+                font-size: 0.74rem;
+            }
+
+            .lens-adjacent-location {
+                color: #9db1dd;
+                font-size: 0.7rem;
+                margin-top: 0.05rem;
+            }
+
+            .lens-region-pill {
+                border-radius: 999px;
+                font-size: 0.65rem;
+                padding: 0.18rem 0.45rem;
+                white-space: nowrap;
+            }
+
+            .lens-region-pill.same {
+                border: 1px solid rgba(97, 227, 201, 0.45);
+                background: rgba(29, 82, 72, 0.55);
+                color: #b8f5e7;
+            }
+
+            .lens-region-pill.nearby {
+                border: 1px solid rgba(255, 205, 116, 0.45);
+                background: rgba(96, 69, 20, 0.55);
+                color: #ffe1b2;
+            }
+
+            .lens-adjacent-percent {
+                color: #cdd6ef;
+                font-size: 0.78rem;
+                font-weight: 600;
+                min-width: 36px;
+                text-align: right;
+            }
+
+            .lens-adjacent-footer {
+                margin-top: 0.65rem;
+                padding-top: 0.55rem;
+                border-top: 1px solid rgba(143, 160, 223, 0.12);
+                color: #b89cff;
+                font-size: 0.78rem;
+                text-align: center;
+                cursor: pointer;
+            }
+
+            .journey-path-step.selected {
+                border: 1px solid rgba(184, 156, 255, 0.7);
+                border-radius: 999px;
+                padding: 0.15rem 0.55rem 0.15rem 0.2rem;
+                background: linear-gradient(90deg, rgba(89, 72, 189, 0.45), rgba(128, 63, 201, 0.45));
+                box-shadow: 0 0 12px rgba(155, 122, 255, 0.45);
+            }
+
+            .journey-path-step.selected .journey-path-city {
+                color: #efe5ff !important;
+            }
+
+            div[data-testid="stButton"] button[aria-label="✦ Explore Similar Stops"] {
+                min-height: 2.2rem;
+                height: 2.2rem;
+                padding: 0 0.95rem;
+                font-size: 0.85rem;
+                color: #efe5ff;
+                background: linear-gradient(90deg, rgba(103, 80, 255, 0.85) 0%, rgba(177, 70, 255, 0.85) 100%);
+                border: 1px solid rgba(184, 156, 255, 0.5);
+                border-radius: 10px;
+                box-shadow: 0 0 14px rgba(155, 122, 255, 0.35);
+            }
+
+            div[data-testid="stVerticalBlockBorderWrapper"]:has(.route-stops-header) {
+                border-color: rgba(130, 149, 210, 0.18) !important;
+                border-radius: 18px !important;
+                background: linear-gradient(180deg, rgba(15, 21, 42, 0.86) 0%, rgba(10, 14, 30, 0.9) 100%) !important;
+                box-shadow: 0 8px 26px rgba(0, 0, 0, 0.45) !important;
+                max-height: 640px;
+                overflow-y: auto;
+            }
+
+            div[data-testid="stVerticalBlockBorderWrapper"]:has(.lens-selected-marker),
+            div[data-testid="stVerticalBlockBorderWrapper"]:has(.lens-adjacent-marker) {
+                border-color: rgba(184, 156, 255, 0.32) !important;
+                border-radius: 18px !important;
+                background: linear-gradient(180deg, rgba(33, 22, 72, 0.7) 0%, rgba(15, 12, 38, 0.86) 100%) !important;
+                box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45) !important;
+            }
+
+            div[data-testid="stVerticalBlockBorderWrapper"]:has(.lens-adjacent-marker) {
+                background: linear-gradient(180deg, rgba(15, 21, 42, 0.86) 0%, rgba(10, 14, 30, 0.9) 100%) !important;
+                border-color: rgba(130, 149, 210, 0.18) !important;
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1303,6 +1813,243 @@ def render_world_map(points: list[JourneyPoint]) -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def render_lens_map(points: list[JourneyPoint], lens_order: int) -> None:
+    """Map variant for the lens view: selected cluster glows; others stay visible but dim."""
+    if not points:
+        st.info("No mappable songs in this playlist.")
+        return
+
+    selected = next((p for p in points if p.order == lens_order), None)
+    if selected is None:
+        render_world_map(points)
+        return
+
+    clusters = build_map_clusters(points)
+    clusters_ordered = clusters_in_playlist_order(points, clusters)
+
+    def _cluster_has_selected(cluster: Any) -> bool:
+        return any(s.order == lens_order for s in cluster.songs)
+
+    base_rows: list[dict[str, Any]] = []
+    highlight_rows: list[dict[str, Any]] = []
+    glow_rows: list[dict[str, Any]] = []
+    for c in clusters:
+        is_selected_cluster = _cluster_has_selected(c)
+        row = {
+            "lon": c.lng,
+            "lat": c.lat,
+            "tooltip": cluster_tooltip_html(c),
+            "radius_m": 55_000 + min(c.song_count - 1, 6) * 6_000,
+            "radius_min_px": min(20, 10 + 2 * (c.song_count - 1)),
+            "radius_max_px": min(26, 14 + 2 * (c.song_count - 1)),
+        }
+        if is_selected_cluster:
+            glow_rows.append(
+                {
+                    "lon": c.lng,
+                    "lat": c.lat,
+                    "radius_m": 120_000,
+                    "radius_min_px": 38,
+                    "radius_max_px": 48,
+                }
+            )
+            highlight_rows.append(row)
+        else:
+            base_rows.append(row)
+
+    text_rows: list[dict[str, Any]] = []
+    for cluster in clusters:
+        is_selected_cluster = _cluster_has_selected(cluster)
+        visible = cluster.songs[:MAX_VISIBLE_MAP_LABELS]
+        alpha = 255 if is_selected_cluster else 170
+        for i, song in enumerate(visible):
+            title = song.title if len(song.title) <= 32 else f"{song.title[:31]}…"
+            text_rows.append(
+                {
+                    "lon": cluster.lng,
+                    "lat": cluster.lat,
+                    "text": f"{song.order}. {title}",
+                    "offset_y": -(LABEL_BASE_OFFSET_PX + i * LABEL_LINE_HEIGHT_PX),
+                    "alpha": alpha,
+                }
+            )
+        remaining = len(cluster.songs) - len(visible)
+        if remaining > 0:
+            i = len(visible)
+            text_rows.append(
+                {
+                    "lon": cluster.lng,
+                    "lat": cluster.lat,
+                    "text": f"+{remaining} more",
+                    "offset_y": -(LABEL_BASE_OFFSET_PX + i * LABEL_LINE_HEIGHT_PX),
+                    "alpha": alpha,
+                }
+            )
+
+    text_df = (
+        pd.DataFrame(text_rows)
+        if text_rows
+        else pd.DataFrame(columns=["lon", "lat", "text", "offset_y", "alpha"])
+    )
+
+    path_data = [{"path": seg} for seg in build_cluster_path_segments(clusters_ordered)]
+    layers: list[pdk.Layer] = []
+
+    if path_data:
+        layers.append(
+            pdk.Layer(
+                "PathLayer",
+                data=path_data,
+                get_path="path",
+                get_color=[163, 126, 255, 140],
+                get_width=3,
+                width_min_pixels=2,
+                pickable=False,
+            )
+        )
+
+    if base_rows:
+        layers.append(
+            pdk.Layer(
+                "ScatterplotLayer",
+                data=pd.DataFrame(base_rows),
+                get_position="[lon, lat]",
+                get_fill_color=[255, 200, 102, 130],
+                get_line_color=[255, 255, 255, 110],
+                get_radius="radius_m",
+                radius_min_pixels="radius_min_px",
+                radius_max_pixels="radius_max_px",
+                line_width_min_pixels=1,
+                pickable=True,
+            )
+        )
+
+    if glow_rows:
+        layers.append(
+            pdk.Layer(
+                "ScatterplotLayer",
+                data=pd.DataFrame(glow_rows),
+                get_position="[lon, lat]",
+                get_fill_color=[155, 122, 255, 70],
+                get_radius="radius_m",
+                radius_min_pixels="radius_min_px",
+                radius_max_pixels="radius_max_px",
+                line_width_min_pixels=0,
+                stroked=False,
+                pickable=False,
+            )
+        )
+
+    if highlight_rows:
+        layers.append(
+            pdk.Layer(
+                "ScatterplotLayer",
+                data=pd.DataFrame(highlight_rows),
+                get_position="[lon, lat]",
+                get_fill_color=[184, 156, 255, 240],
+                get_line_color=[239, 229, 255, 240],
+                get_radius="radius_m",
+                radius_min_pixels="radius_min_px",
+                radius_max_pixels="radius_max_px",
+                line_width_min_pixels=2,
+                pickable=True,
+            )
+        )
+
+    if not text_df.empty:
+        font_size = 12 if any(c.song_count > 3 for c in clusters) else 13
+        layers.append(
+            pdk.Layer(
+                "TextLayer",
+                data=text_df,
+                get_position="[lon, lat]",
+                get_text="text",
+                get_size=font_size,
+                get_color="[255, 255, 255, alpha]",
+                get_alignment_baseline="'bottom'",
+                get_pixel_offset="[0, offset_y]",
+            )
+        )
+
+    positions = [[c.lng, c.lat] for c in clusters]
+    view = compute_view(positions, view_proportion=0.7)
+    selected_zoom = max(view.zoom + 0.5, 3.5)
+    view_state = pdk.ViewState(
+        latitude=selected.lat,
+        longitude=selected.lng,
+        zoom=min(selected_zoom, 5.5),
+        pitch=20,
+        bearing=0,
+    )
+
+    deck = pdk.Deck(
+        layers=layers,
+        initial_view_state=view_state,
+        map_style=MAP_STYLE_CARTO_DARK,
+        tooltip={"html": "{tooltip}", "style": {"backgroundColor": "#0f1528", "color": "#eaf2ff"}},
+    )
+    st.markdown('<div class="journey-map-wrap">', unsafe_allow_html=True)
+    try:
+        st.pydeck_chart(deck, width="stretch", height=560)
+    except TypeError:
+        st.pydeck_chart(deck, use_container_width=True, height=560)
+    except Exception as exc:
+        st.error(f"Map could not be rendered: {exc}")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _route_stop_row_html(
+    song: dict[str, Any],
+    order: int,
+    point_by_order: dict[int, JourneyPoint],
+    *,
+    selected: bool,
+) -> str:
+    loc = extract_location(song)
+    jp = point_by_order.get(order)
+    mapped = jp is not None
+    loc_label = jp.location_label if mapped else loc.display
+    index_style = _journey_index_style(order, mapped=mapped)
+    loc_color = _journey_location_color(order, mapped=mapped)
+    loc_style = f"color: {loc_color};" if mapped else "color: #7f8fb4;"
+
+    title = str(song.get("title") or "Untitled")
+    artist = str(song.get("artist") or "")
+    genre = _primary_style_label(song)
+    cover_url = _song_cover_url(song)
+    cover_src = _cover_data_uri(cover_url) or cover_url
+    if cover_src:
+        cover_html = (
+            f'<div class="journey-stop-cover-wrap">'
+            f'<img class="journey-stop-cover" src="{html.escape(cover_src, quote=True)}" alt="" />'
+            f"</div>"
+        )
+    else:
+        cover_html = (
+            '<div class="journey-stop-cover-wrap">'
+            '<div class="journey-stop-cover-empty"></div>'
+            "</div>"
+        )
+
+    genre_html = ""
+    if genre:
+        genre_html = f'<div class="journey-stop-genre">{html.escape(genre)}</div>'
+
+    stop_class = "journey-stop selected" if selected else "journey-stop"
+    return (
+        f'<div class="{stop_class}">'
+        f'<div class="journey-index" style="{index_style}">{order}</div>'
+        f"{cover_html}"
+        f'<div class="journey-stop-body">'
+        f'<div class="journey-stop-title">{html.escape(title)}</div>'
+        f'<div class="journey-stop-artist">{html.escape(artist)}</div>'
+        f'<div class="journey-stop-location" style="{loc_style}">{html.escape(loc_label)}</div>'
+        f"</div>"
+        f"{genre_html}"
+        f"</div>"
+    )
+
+
 def render_route_stops_panel(
     songs: list[dict[str, Any]],
     points: list[JourneyPoint],
@@ -1314,71 +2061,252 @@ def render_route_stops_panel(
     total = len([s for s in songs if isinstance(s, dict)])
     valid_songs = [(order, s) for order, s in enumerate(songs, start=1) if isinstance(s, dict)]
 
-    parts: list[str] = []
-    for idx, (order, song) in enumerate(valid_songs):
+    panel = st.container(border=True)
+    with panel:
+        st.markdown(
+            '<div class="route-stops-header">'
+            '<span class="route-stops-icon">◎</span>'
+            '<span>Route Stops</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+        for idx, (order, song) in enumerate(valid_songs):
+            row_html = _route_stop_row_html(song, order, point_by_order, selected=False)
+
+            card_col, btn_col = st.columns([6.4, 0.7], gap="small")
+            with card_col:
+                st.markdown(row_html, unsafe_allow_html=True)
+            with btn_col:
+                if st.button(
+                    "✦",
+                    key=f"explore_stop_{order}",
+                    help="Explore song stop",
+                    use_container_width=True,
+                ):
+                    st.session_state.journey_lens_song_order = order
+                    st.rerun()
+
+            if idx < len(valid_songs) - 1:
+                st.markdown('<div class="journey-connector"></div>', unsafe_allow_html=True)
+
+        if unmapped or mapped_count < total:
+            note = f'<div class="route-stops-note">{mapped_count} of {total} on map'
+            if unmapped:
+                note += f" · {unmapped} unmapped"
+            note += "</div>"
+            st.markdown(note, unsafe_allow_html=True)
+
+
+def _song_high_conf_labels(items: Any, *, threshold: float = 0.9, limit: int = 4) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    out: list[str] = []
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get("label")
+        if not label:
+            continue
+        conf = entry.get("confidence")
+        conf_val = float(conf) if isinstance(conf, (int, float)) else 0.0
+        if conf_val < threshold:
+            continue
+        out.append(str(label).strip())
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _song_geography_label(song: dict[str, Any], point: JourneyPoint | None) -> str:
+    g = song.get("geography")
+    if isinstance(g, dict):
+        primary = g.get("primary")
+        if isinstance(primary, dict) and primary.get("label"):
+            return str(primary["label"]).strip()
+    if point is not None:
+        return point.location_label
+    return extract_location(song).display
+
+
+def render_selected_stop_card(song: dict[str, Any], point: JourneyPoint | None) -> None:
+    title = str(song.get("title") or "Untitled")
+    artist = str(song.get("artist") or "")
+    release_year = str(song.get("release_year") or "").strip()
+    style_label = _primary_style_label(song)
+
+    location = ""
+    if point is not None:
+        location = point.location_label
+    else:
         loc = extract_location(song)
-        jp = point_by_order.get(order)
-        mapped = jp is not None
-        loc_label = jp.location_label if mapped else loc.display
-        index_style = _journey_index_style(order, mapped=mapped)
-        loc_color = _journey_location_color(order, mapped=mapped)
-        loc_style = f"color: {loc_color};" if mapped else "color: #7f8fb4;"
+        if loc.is_mappable:
+            location = loc.display
 
-        title = str(song.get("title") or "Untitled")
-        artist = str(song.get("artist") or "")
-        genre = _primary_style_label(song)
-        cover_url = _song_cover_url(song)
-        cover_src = _cover_data_uri(cover_url) or cover_url
-        if cover_src:
-            cover_html = (
-                f'<div class="journey-stop-cover-wrap">'
-                f'<img class="journey-stop-cover" src="{html.escape(cover_src, quote=True)}" alt="" />'
-                f"</div>"
-            )
-        else:
-            cover_html = (
-                '<div class="journey-stop-cover-wrap">'
-                '<div class="journey-stop-cover-empty"></div>'
-                "</div>"
-            )
+    cover_url = _song_cover_url(song)
+    cover_src = _cover_data_uri(cover_url) or cover_url
+    if cover_src:
+        cover_html = (
+            f'<img class="lens-selected-cover" '
+            f'src="{html.escape(cover_src, quote=True)}" alt="" />'
+        )
+    else:
+        cover_html = '<div class="lens-selected-cover-empty"></div>'
 
-        genre_html = ""
-        if genre:
-            genre_html = f'<div class="journey-stop-genre">{html.escape(genre)}</div>'
+    pills_parts: list[str] = []
+    if release_year:
+        pills_parts.append(
+            f'<span class="lens-selected-pill year">{html.escape(release_year)}</span>'
+        )
+    if style_label:
+        pills_parts.append(
+            f'<span class="lens-selected-pill style">{html.escape(style_label)}</span>'
+        )
+    pills_html = "".join(pills_parts)
 
-        parts.append(
-            f'<div class="journey-stop">'
-            f'<div class="journey-index" style="{index_style}">{order}</div>'
-            f"{cover_html}"
-            f'<div class="journey-stop-body">'
-            f'<div class="journey-stop-title">{html.escape(title)}</div>'
-            f'<div class="journey-stop-artist">{html.escape(artist)}</div>'
-            f'<div class="journey-stop-location" style="{loc_style}">{html.escape(loc_label)}</div>'
-            f"</div>"
-            f"{genre_html}"
+    location_html = ""
+    if location:
+        location_html = (
+            f'<div class="lens-selected-location">{html.escape(location)}</div>'
+        )
+
+    geography_value = _song_geography_label(song, point)
+    time_obj = song.get("time")
+    era_value = ""
+    if isinstance(time_obj, dict) and time_obj.get("label"):
+        era_value = str(time_obj["label"]).strip()
+    emotion_labels = _song_high_conf_labels(song.get("emotions"))
+    influence_labels = _song_high_conf_labels(song.get("influences"))
+
+    meta_rows = [
+        ("Geography", "◍", geography_value or EMPTY_SIGNAL),
+        ("Era", "◷", era_value or EMPTY_SIGNAL),
+        ("Emotion", "♡", ", ".join(emotion_labels) if emotion_labels else EMPTY_SIGNAL),
+        (
+            "Influence",
+            "◎",
+            ", ".join(influence_labels) if influence_labels else EMPTY_SIGNAL,
+        ),
+    ]
+    meta_html_parts: list[str] = []
+    for label, icon, value in meta_rows:
+        meta_html_parts.append(
+            f'<div class="lens-meta-row">'
+            f'<div class="lens-meta-icon">{icon}</div>'
+            f'<div class="lens-meta-label">{html.escape(label)}</div>'
+            f'<div class="lens-meta-value">{html.escape(value)}</div>'
             f"</div>"
         )
-        if idx < len(valid_songs) - 1:
-            parts.append('<div class="journey-connector"></div>')
+    meta_html = "".join(meta_html_parts)
 
-    body = "".join(parts)
+    blurb = _match_blurb(song)
 
-    note = ""
-    if unmapped or mapped_count < total:
-        note = f'<div class="route-stops-note">{mapped_count} of {total} on map'
-        if unmapped:
-            note += f" · {unmapped} unmapped"
-        note += "</div>"
+    container = st.container(border=True)
+    with container:
+        st.markdown(
+            f"""
+            <div class="lens-selected-marker"></div>
+            <div class="lens-selected-header">
+                <span>✦</span>
+                <span>Selected Stop</span>
+            </div>
+            <div class="lens-selected-top">
+                {cover_html}
+                <div>
+                    <div class="lens-selected-title">{html.escape(title)}</div>
+                    <div class="lens-selected-artist">{html.escape(artist)}</div>
+                    <div class="lens-selected-pills">{pills_html}</div>
+                    {location_html}
+                </div>
+            </div>
+            <div class="lens-meta-grid">{meta_html}</div>
+            <div class="lens-match-blurb">
+                <div class="lens-match-blurb-title"><span>✦</span><span>Why this match?</span></div>
+                <div>{html.escape(blurb)}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
+
+_PLACEHOLDER_ADJACENT_SONGS: list[dict[str, str]] = [
+    {
+        "title": "Piece of My Heart",
+        "artist": "Big Brother & the Holding Company",
+        "location": "San Francisco, USA",
+        "label": "same region",
+        "percent": "91%",
+    },
+    {
+        "title": "White Rabbit",
+        "artist": "Jefferson Airplane",
+        "location": "San Francisco, USA",
+        "label": "same region",
+        "percent": "90%",
+    },
+    {
+        "title": "Somebody to Love",
+        "artist": "Jefferson Airplane",
+        "location": "San Francisco, USA",
+        "label": "same region",
+        "percent": "88%",
+    },
+    {
+        "title": "Light My Fire",
+        "artist": "The Doors",
+        "location": "Los Angeles, USA",
+        "label": "nearby region",
+        "percent": "86%",
+    },
+    {
+        "title": "The End",
+        "artist": "The Doors",
+        "location": "Los Angeles, USA",
+        "label": "nearby region",
+        "percent": "84%",
+    },
+    {
+        "title": "The Weight",
+        "artist": "The Band",
+        "location": "Vancouver, Canada",
+        "label": "nearby region",
+        "percent": "82%",
+    },
+]
+
+
+def render_adjacent_songs(
+    songs: list[dict[str, Any]],
+    points: list[JourneyPoint],
+    lens_order: int,
+) -> None:
+    row_html_parts: list[str] = []
+    for rank, entry in enumerate(_PLACEHOLDER_ADJACENT_SONGS, start=1):
+        pill_kind = "same" if entry["label"] == "same region" else "nearby"
+        row_html_parts.append(
+            f'<div class="lens-adjacent-row">'
+            f'<div class="lens-adjacent-rank">{rank}</div>'
+            f'<div class="lens-adjacent-cover-empty"></div>'
+            f"<div>"
+            f'<div class="lens-adjacent-title">{html.escape(entry["title"])}</div>'
+            f'<div class="lens-adjacent-artist">{html.escape(entry["artist"])}</div>'
+            f'<div class="lens-adjacent-location">{html.escape(entry["location"])}</div>'
+            f"</div>"
+            f'<span class="lens-region-pill {pill_kind}">{html.escape(entry["label"])}</span>'
+            f'<div class="lens-adjacent-percent">{html.escape(entry["percent"])}</div>'
+            f"</div>"
+        )
+
+    body = "".join(row_html_parts)
     st.markdown(
         f"""
-        <div class="journey-panel">
-            <div class="route-stops-header">
-                <span class="route-stops-icon">◎</span>
-                <span>Route Stops</span>
+        <div class="lens-adjacent-panel">
+            <div class="lens-adjacent-marker"></div>
+            <div class="lens-adjacent-header">
+                <span>◍</span><span>Adjacent Songs by Geography</span>
             </div>
             {body}
-            {note}
+            <div class="lens-adjacent-footer">View all adjacent songs ›</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1388,6 +2316,8 @@ def render_route_stops_panel(
 def render_journey_path(
     songs: list[dict[str, Any]],
     points: list[JourneyPoint],
+    *,
+    selected_order: int | None = None,
 ) -> None:
     point_by_order = {p.order: p for p in points}
     valid_songs = [(order, s) for order, s in enumerate(songs, start=1) if isinstance(s, dict)]
@@ -1400,8 +2330,11 @@ def render_journey_path(
         mapped = point_by_order.get(order) is not None
         index_style = _journey_index_style(order, mapped=mapped)
         city_color = _journey_location_color(order, mapped=mapped)
+        step_classes = "journey-path-step"
+        if selected_order is not None and order == selected_order:
+            step_classes += " selected"
         steps.append(
-            f'<span class="journey-path-step">'
+            f'<span class="{step_classes}">'
             f'<span class="journey-path-index" style="{index_style}">{order}</span>'
             f'<span class="journey-path-city" style="color: {city_color};">{html.escape(city)}</span>'
             f"</span>"
@@ -1423,6 +2356,84 @@ def render_journey_path(
         unsafe_allow_html=True,
     )
 
+
+
+def _render_lens_filter_row() -> None:
+    chips = [
+        ("◍", "Map", True, False),
+        ("◷", "Era", False, True),
+        ("♡", "Mood", False, True),
+        ("◌", "Style", False, True),
+        ("◎", "Influence", False, True),
+    ]
+    parts: list[str] = []
+    for icon, label, active, disabled in chips:
+        classes = "lens-filter-chip"
+        if active:
+            classes += " active"
+        if disabled:
+            classes += " disabled"
+        parts.append(
+            f'<span class="{classes}"><span>{icon}</span><span>{html.escape(label)}</span></span>'
+        )
+    st.markdown(
+        f'<div class="lens-filter-row">{"".join(parts)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_journey_lens(
+    songs: list[dict[str, Any]],
+    points: list[JourneyPoint],
+    lens_order: int,
+) -> None:
+    valid_songs = {order: s for order, s in enumerate(songs, start=1) if isinstance(s, dict)}
+    selected_song = valid_songs.get(lens_order)
+    selected_point = next((p for p in points if p.order == lens_order), None)
+    if selected_song is None or selected_point is None:
+        st.session_state.journey_lens_song_order = None
+        st.rerun()
+        return
+
+    back_col, _ = st.columns([1.5, 6.5])
+    with back_col:
+        if st.button("← Back to Journey", key="lens_back_btn", use_container_width=True):
+            st.session_state.journey_lens_song_order = None
+            st.rerun()
+
+    st.markdown(
+        """
+        <div class="journey-hero-title">
+            Explore <span class="journey-gradient">around</span> your stop
+        </div>
+        <div class="journey-hero-sub">
+            Discover similar songs connected by style, time, emotion, and influence.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    map_col, panel_col = st.columns([2.1, 1.0], gap="medium")
+    with map_col:
+        _render_lens_filter_row()
+        render_world_map(points)
+    with panel_col:
+        render_selected_stop_card(selected_song, selected_point)
+        render_adjacent_songs(songs, points, lens_order)
+
+    path_col, cta_col = st.columns([5.0, 2.0], gap="medium")
+    with path_col:
+        render_journey_path(songs, points, selected_order=lens_order)
+    with cta_col:
+        st.markdown("<div style='height: 0.7rem;'></div>", unsafe_allow_html=True)
+        if st.button(
+            "✦ Explore Similar Stops",
+            key="lens_explore_similar_btn",
+            use_container_width=True,
+        ):
+            st.toast(
+                "External recommendations coming soon — will use the backend.",
+            )
 
 
 def render_journey_tab(api_base: str) -> None:
@@ -1475,6 +2486,13 @@ def render_journey_tab(api_base: str) -> None:
     except Exception as exc:
         st.warning(f"Could not geocode some locations: {exc}")
         points, unmapped = [], len(songs)
+
+    lens_order = st.session_state.get("journey_lens_song_order")
+    if isinstance(lens_order, int) and any(p.order == lens_order for p in points):
+        render_journey_lens(songs, points, lens_order)
+        return
+    if lens_order is not None:
+        st.session_state.journey_lens_song_order = None
 
     render_journey_header()
     render_journey_chips(_aggregates_from_playlist(pl))
@@ -1563,6 +2581,7 @@ def render_left_panel(api_base: str) -> None:
                     if loaded_prompt:
                         st.session_state.pending_playlist_prompt = loaded_prompt
                     st.toast(f"Playlist {playlist_id} loaded")
+                    st.rerun()
                 except SoundTripAPIError as exc:
                     st.session_state.generated_playlist = None
                     if exc.status_code == 404:
